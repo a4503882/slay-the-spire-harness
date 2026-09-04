@@ -39,6 +39,29 @@ def test_h1b_fixture_provenance_forbids_model_prompt_use() -> None:
     assert provenance["contains_credentials"] is False
 
 
+def test_main_menu_publishes_only_the_bounded_ironclad_a0_start_template() -> None:
+    raw = {
+        "bridge_version": "1.2.1-sts-harness.2",
+        "protocol_version": "communicationmod-harness.v2",
+        "available_commands": ["start", "state"],
+        "ready_for_command": True,
+        "in_game": False,
+    }
+    observation, legal = normalize(raw)
+
+    assert observation["decision_kind"] == "main_menu"
+    assert legal.document["actions"] == []
+    assert legal.document["templates"] == [
+        {
+            "type": "start_run",
+            "allowed_character_ids": ["IRONCLAD"],
+            "minimum_ascension": 0,
+            "maximum_ascension": 0,
+            "seed_pattern": "^[A-Za-z0-9]+$",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("raw", "kind", "action_types"),
     [
@@ -381,6 +404,7 @@ def test_combat_fixture_covers_multiple_monsters_card_variants_and_potions() -> 
         and action.get("selector", {}).get("potion_id") == "Strength Potion"
         for action in actions
     ) == 1
+    assert sum(action["type"] == "discard_potion" for action in actions) == 2
 
 
 def test_any_number_grid_exposes_selection_and_zero_card_confirm() -> None:

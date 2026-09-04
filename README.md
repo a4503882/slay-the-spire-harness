@@ -3,13 +3,14 @@
 Implementation workspace for the local Slay the Spire 1 Harness specified in
 [`SPEC.md`](SPEC.md).
 
-M-1 and H1-A are implemented and have passed isolated native probes. H1-A adds
-the loopback framed JSON-RPC sidecar, player-visible state projection, stable
-agent identities, typed legal actions with independent pre/post validation,
-transition hash chaining, offline replay verification, and one complete
-fixed-seed combat without changing normal saves or configuration. H1-B adds the
-complete vanilla screen/action surface, one-process-per-episode launcher,
-metrics, explicit failure behavior, and identity-rebased same-seed live replay.
+M-1, H1-A, and H1-B are implemented and have passed isolated native probes.
+H1-A adds the loopback framed JSON-RPC sidecar, player-visible state projection,
+stable agent identities, typed legal actions with independent pre/post
+validation, transition hash chaining, offline replay verification, and one
+complete fixed-seed combat without changing normal saves or configuration.
+H1-B adds the complete vanilla screen/action surface, one-process-per-episode
+launcher, metrics, explicit failure behavior, and identity-rebased same-seed
+live replay. H1-C baselines have not started.
 
 ## Current target
 
@@ -55,6 +56,9 @@ preflight instead of launching a run whose exact normal-data guard cannot be
 trusted. It never closes Steam itself and does not reject `SteamService.exe`.
 Evidence is retained under `artifacts\h1b-runs` and
 `artifacts\h1b-corpus`.
+
+The first accepted H1-B source/replay corpus is documented in
+[`docs/H1B_ACCEPTANCE.md`](docs/H1B_ACCEPTANCE.md).
 
 The acceptance driver completes every required Act 1 path, consumes a boss
 reward, then uses legal native `end_turn` actions in Act 2 until an authentic

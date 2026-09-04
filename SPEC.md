@@ -2,12 +2,12 @@
 
 | Field | Value |
 | --- | --- |
-| Specification version | `0.1.0-draft` |
+| Specification version | `0.2.0-draft` |
 | Target game | Slay the Spire 1 for Windows/Steam |
 | Initial gameplay scope | Vanilla Ironclad, Ascension 0 |
 | Initial integration | ModTheSpire + BaseMod + a pinned CommunicationMod-compatible bridge |
 | Primary control mode | Structured internal state and structured actions |
-| Status | H1-A implemented and automatically verified; H1-B not started |
+| Status | M-1, H1-A, and H1-B implemented and automatically verified; H1-C not started |
 
 ## 1. Normative language
 
@@ -1789,41 +1789,69 @@ H2 passes only when:
 11. automated checks complete before operator manual acceptance;
 12. no automated UI tool claims manual acceptance on the operator's behalf.
 
-## 39. Open implementation questions
+## 39. Evidence-resolved decisions and remaining questions
 
-The following must be resolved by evidence during M-1 or H1 and then promoted
-to normative decisions:
+### 39.1 Decisions resolved through H1-B
 
-1. Whether to maintain a direct CommunicationMod fork or a smaller companion
-   bridge using its Java dependency hooks.
-2. The exact reproducible bridge source revision and accepted JAR hash.
-3. The exact ModTheSpire non-interactive launch mechanism for the approved mod
-   set.
-4. The proven isolation mechanism for game saves, preferences, and ModTheSpire
-   config on this build.
-5. Which raw UUIDs and native counters vary across same-seed runs.
-6. Which CommunicationMod arrays expose semantically meaningful order versus
-   hidden or unstable implementation order.
-7. The complete normalized schema for every selection screen and known event
-   exception.
-8. Whether the stock bridge can verify full-potion-inventory reward behavior or
-   requires a native result patch.
-9. Whether native framebuffer capture can be added without OS-level desktop
+1. The Harness maintains a direct, pinned CommunicationMod fork under
+   `vendor/CommunicationMod`. It is based on upstream commit
+   `5e417eb189530986b9047a3c9426889fb261d146`.
+2. The H1-B bridge is `1.2.1-sts-harness.2`, protocol
+   `communicationmod-harness.v2`. The accepted reproducible JAR SHA-256 is
+   `2C624F16E564902A572D421E2526E31271165B2B5B793861844DAAC76683B4DD`.
+3. The accepted non-interactive launch invokes the pinned ModTheSpire JAR with
+   `--skip-launcher`, `--skip-intro`, and exactly
+   `basemod,CommunicationMod`. Harness episodes skip Steam API initialization;
+   the formal launcher refuses to start while interactive `steam.exe` is
+   active.
+4. Each episode uses a unique profile/work root and redirects its working
+   directory, `user.home`, `APPDATA`, `LOCALAPPDATA`, and `USERPROFILE`. Only a
+   verified game-JAR hard link and the exact accepted mods are materialized.
+   External pre/post guards cover the normal game tree, Workshop mods,
+   ModTheSpire configuration, Steam manifest, and applicable Steam
+   `localconfig.vdf`.
+5. Native UUIDs, native counters, and Harness episode/session/run/room/combat/
+   decision identities vary across same-seed executions. They remain in exact
+   run-local integrity documents and are removed or semantically rebased only
+   by `sts-replay-checkpoint.v1`.
+6. Hand and card-in-play order and actionable current values are meaningful and
+   strict. Draw, discard, exhaust, and limbo collections are semantic multisets
+   for cross-run replay; the exact observation retains their player-visible
+   contents and documented hidden-order boundary.
+7. `sts-observation.v1` and `sts-legal-actions.v1` cover the initial vanilla
+   main menu, Neow, combat, card/combat reward, map, event, shop, rest,
+   treasure, boss reward, room completion, grid/hand selection, and terminal
+   screens. Unknown actionable screens become an explicit unsupported hard
+   stop rather than a generic native-command fallback.
+8. The pinned bridge fork supplies the structured reward/inventory fields and
+   action-settle behavior needed for verification. When potion inventory is
+   full, the Harness suppresses a potion-take action that the upstream bridge
+   could otherwise report as a silent success.
+9. Cross-run live parity uses the exact, versioned projection in Section 25.2.
+   It does not compare `observation_hash`, `legal_actions_hash`,
+   `transition_hash`, or `chain_hash` across runs.
+10. Player-visible card, relic, and potion names/descriptions and actionable
+    current card values are included in the H1-B projection. Raw native
+    identities and hidden state remain excluded from policy observations.
+
+The accepted evidence for these decisions is indexed in
+`docs/H1B_ACCEPTANCE.md`.
+
+### 39.2 Questions remaining after H1-B
+
+1. Whether native framebuffer capture can be added without OS-level desktop
    capture.
-10. The narrowest repeated-seed state fields that achieve useful live replay
-    parity without hiding real divergence.
-11. Whether formal Act 3 victory should automatically proceed to Act 4 when the
-    three keys are present in a later benchmark.
-12. Which static card/relic/potion descriptions are safe and compact enough for
-    the first model-session baseline.
-13. Whether a tactical solver will simulate only player-visible uncertainty or
-    receive additional explicitly labeled oracle state.
-14. The resource and profile isolation required before parallel native runs can
-    be authorized.
+2. Whether a later benchmark should automatically enter Act 4 after an Act 3
+   victory with all three keys.
+3. Whether a future tactical solver will model only player-visible uncertainty
+   or receive separately labeled oracle state.
+4. What additional resource and profile isolation must be proven before
+   parallel native runs can be authorized.
 
-Unresolved questions are not permission to choose a broader, less safe fallback.
-When one blocks a milestone, the implementation must stop and record the exact
-evidence needed to resolve it.
+These questions belong to later baseline, model, visual, or parallel-execution
+work and do not widen H1-B. They are not permission to choose a broader or less
+safe fallback. If one blocks a later milestone, the implementation must stop
+and record the exact evidence needed to resolve it.
 
 ## 40. Versioning and change control
 
