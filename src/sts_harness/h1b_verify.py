@@ -294,6 +294,9 @@ def _verify_episode(run_dir: Path, expected_mode: str) -> dict[str, Any]:
         "environment_matches_trace": report.get("environment_fingerprint_id")
         == replay.get("environment_fingerprint_id"),
         "metrics_match_worker": worker.get("metrics") == metrics,
+        "combat_metrics_coherent": isinstance(metrics.get("combats_entered"), int)
+        and isinstance(metrics.get("combats_completed"), int)
+        and 0 <= metrics["combats_completed"] <= metrics["combats_entered"],
         "model_metrics_explicitly_unavailable": model_metrics_unavailable,
         "terminal_native_state": transitions[-1].get("terminal") is True
         and _dict(transitions[-1].get("observation")).get("decision_kind")

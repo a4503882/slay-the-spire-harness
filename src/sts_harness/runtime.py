@@ -38,6 +38,16 @@ def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _combat_completed_between(
+    before_observation: dict[str, Any],
+    after_observation: dict[str, Any],
+) -> bool:
+    return before_observation.get("combat") is not None and (
+        after_observation.get("combat") is None
+        or after_observation.get("decision_kind") in {"game_over", "victory"}
+    )
+
+
 class H1Runtime:
     READ_METHODS = {
         "ping",
@@ -660,7 +670,10 @@ class H1Runtime:
                     },
                 )
                 current = after
-                if action_before.observation.get("decision_kind") == "combat" and after.observation.get("decision_kind") != "combat":
+                if _combat_completed_between(
+                    action_before.observation,
+                    after.observation,
+                ):
                     events.append({"type": "combat_completed", "combat_id": action_before.observation.get("combat_id")})
                 if not verified:
                     stop_reason = "ACTION_UNVERIFIED"

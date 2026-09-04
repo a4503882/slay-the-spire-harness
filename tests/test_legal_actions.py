@@ -110,6 +110,25 @@ def test_validator_rejects_forged_payload_even_with_current_action_id() -> None:
         validate_action_submission(submission, snapshot)
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda submission: submission.update({"unexpected": True}),
+        lambda submission: submission.pop("payload"),
+        lambda submission: submission.update({"type": 7}),
+        lambda submission: submission.update({"payload": []}),
+    ],
+)
+def test_validator_rejects_non_exact_action_schema(mutate) -> None:
+    raw = combat_raw()
+    observation = StateNormalizer("ep_test", "native_test").normalize(raw, 1)
+    snapshot = build_legal_actions(raw, observation)
+    submission = submission_from_public_action(snapshot.document["actions"][0])
+    mutate(submission)
+    with pytest.raises(ActionValidationFailure):
+        validate_action_submission(submission, snapshot)
+
+
 def test_validator_rejects_action_from_previous_decision() -> None:
     raw = combat_raw()
     normalizer = StateNormalizer("ep_test", "native_test")
@@ -168,4 +187,3 @@ def test_map_choices_use_stable_node_ids() -> None:
         {"map_node_id": "node_2_0"},
     ]
     assert snapshot.native_actions[map_actions[1]["action_id"]].command == "choose 1"
-

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from sts_harness import episode_launcher
-from sts_harness.episode_launcher import _active_steam_clients, _real_python_executable, _sha256
+from sts_harness.episode_launcher import (
+    _active_steam_clients,
+    _owned_worker_identity_matches,
+    _real_python_executable,
+    _sha256,
+)
 
 
 def test_launcher_hashes_real_python_not_windowsapps_alias() -> None:
@@ -28,3 +33,30 @@ def test_launcher_steam_preflight_ignores_service_and_finds_client(monkeypatch) 
     assert _active_steam_clients() == [
         {"pid": 30, "name": "steam.exe", "create_time": 123.0}
     ]
+
+
+def test_worker_cleanup_requires_exact_creation_time_and_recorded_owner() -> None:
+    class FakeWorker:
+        @staticmethod
+        def create_time() -> float:
+            return 123.5
+
+    worker = FakeWorker()
+    assert _owned_worker_identity_matches(
+        worker,  # type: ignore[arg-type]
+        expected_create_time=123.5,
+        recorded_parent_pid=40,
+        owner_pid=40,
+    )
+    assert not _owned_worker_identity_matches(
+        worker,  # type: ignore[arg-type]
+        expected_create_time=124.0,
+        recorded_parent_pid=40,
+        owner_pid=40,
+    )
+    assert not _owned_worker_identity_matches(
+        worker,  # type: ignore[arg-type]
+        expected_create_time=123.5,
+        recorded_parent_pid=41,
+        owner_pid=40,
+    )

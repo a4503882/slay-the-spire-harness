@@ -300,6 +300,21 @@ def _stop_owned_process(process: subprocess.Popen[Any] | None) -> bool:
     return process.poll() is not None
 
 
+def _owned_worker_identity_matches(
+    worker_process: psutil.Process,
+    *,
+    expected_create_time: float | None,
+    recorded_parent_pid: int | None,
+    owner_pid: int | None,
+) -> bool:
+    return (
+        expected_create_time is not None
+        and abs(worker_process.create_time() - expected_create_time) < 0.001
+        and owner_pid is not None
+        and recorded_parent_pid == owner_pid
+    )
+
+
 def launch_episode(
     *,
     project_root: Path,
@@ -486,11 +501,11 @@ def launch_episode(
         try:
             worker_process = psutil.Process(worker_pid)
             if worker_process.is_running():
-                identity_matches = (
-                    worker_create_time is not None
-                    and abs(worker_process.create_time() - worker_create_time) < 0.001
-                    and process is not None
-                    and worker_parent_pid == process.pid
+                identity_matches = _owned_worker_identity_matches(
+                    worker_process,
+                    expected_create_time=worker_create_time,
+                    recorded_parent_pid=worker_parent_pid,
+                    owner_pid=process.pid if process is not None else None,
                 )
                 if identity_matches:
                     worker_process.terminate()

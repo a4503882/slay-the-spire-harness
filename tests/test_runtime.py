@@ -8,7 +8,7 @@ import pytest
 
 from sts_harness.legal_actions import submission_from_public_action
 from sts_harness.rpc_protocol import RpcFailure
-from sts_harness.runtime import H1Runtime
+from sts_harness.runtime import H1Runtime, _combat_completed_between
 
 from test_legal_actions import combat_raw
 from h1b_fixtures import card, raw_state, relic
@@ -37,6 +37,17 @@ def _step_params(transition: dict, action: dict) -> dict:
         "expected_legal_actions_hash": legal["legal_actions_hash"],
         "actions": [submission_from_public_action(action)],
     }
+
+
+def test_combat_modal_is_not_counted_as_combat_completion() -> None:
+    before = {"decision_kind": "combat", "combat": {"turn": 1}}
+    modal = {"decision_kind": "card_reward", "combat": {"turn": 1}}
+    terminal = {"decision_kind": "game_over", "combat": {"turn": 8}}
+    reward = {"decision_kind": "combat_reward", "combat": None}
+
+    assert _combat_completed_between(before, modal) is False
+    assert _combat_completed_between(before, terminal) is True
+    assert _combat_completed_between(before, reward) is True
 
 
 def test_runtime_reset_step_observe_and_stale_guard(tmp_path: Path) -> None:
@@ -86,6 +97,15 @@ def test_runtime_reset_step_observe_and_stale_guard(tmp_path: Path) -> None:
     assert stepped["action_results"][0]["status"] == "accepted"
     assert runtime.dispatch("env.observe", {}) == stepped
     assert commands == ["start ironclad 0 AMIYA20260904", "play 1 0"]
+
+    public_trace = (tmp_path / "transitions.jsonl").read_text(encoding="utf-8")
+    assert '"controller_nonce"' not in public_trace
+    assert '"available_commands"' not in public_trace
+    assert '"uuid"' not in public_trace
+    assert '"native_command":' not in public_trace
+    raw_trace = (tmp_path / "raw-states.jsonl").read_text(encoding="utf-8")
+    assert '"non_benchmark":true' in raw_trace
+    assert '"available_commands"' in raw_trace
 
     stale = _step_params(reset, action)
     with pytest.raises(RpcFailure, match="STALE_OR_FOREIGN_DECISION"):

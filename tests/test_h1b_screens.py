@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,9 @@ from sts_harness.observation import StateNormalizer
 from sts_harness.replay_checkpoint import RUN_LOCAL_KEYS
 
 from h1b_fixtures import card, potion, raw_state, relic, selection_card, with_full_potions
+
+
+PROVENANCE = Path(__file__).parent / "fixtures" / "h1b" / "provenance.json"
 
 
 def normalize(raw: dict):
@@ -23,6 +28,15 @@ def contains_run_local_key(value: object) -> bool:
     if isinstance(value, list):
         return any(contains_run_local_key(item) for item in value)
     return False
+
+
+def test_h1b_fixture_provenance_forbids_model_prompt_use() -> None:
+    provenance = json.loads(PROVENANCE.read_text(encoding="utf-8"))
+    assert provenance["schema_version"] == "sts-fixture-provenance.v1"
+    assert provenance["fairness_profile"] == "player_visible.v1"
+    assert provenance["contains_raw_hidden_state"] is True
+    assert "model prompts" in provenance["forbidden_uses"]
+    assert provenance["contains_credentials"] is False
 
 
 @pytest.mark.parametrize(
