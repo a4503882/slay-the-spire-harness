@@ -3,10 +3,14 @@ package communicationmod;
 import com.megacrit.cardcrawl.actions.GameActionManager;
 import com.megacrit.cardcrawl.core.CardCrawlGame;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
+import com.megacrit.cardcrawl.monsters.AbstractMonster;
 import com.megacrit.cardcrawl.neow.NeowRoom;
 import com.megacrit.cardcrawl.rooms.AbstractRoom;
 import com.megacrit.cardcrawl.rooms.EventRoom;
 import com.megacrit.cardcrawl.rooms.VictoryRoom;
+import com.megacrit.cardcrawl.vfx.AbstractGameEffect;
+import com.megacrit.cardcrawl.vfx.FastCardObtainEffect;
+import com.megacrit.cardcrawl.vfx.cardManip.ShowCardAndObtainEffect;
 
 public class GameStateListener {
     private static AbstractDungeon.CurrentScreen previousScreen = null;
@@ -75,6 +79,52 @@ public class GameStateListener {
         myTurn = false;
     }
 
+    private static boolean hasPendingCardObtainEffect() {
+        if (AbstractDungeon.effectList != null) {
+            for (AbstractGameEffect effect : AbstractDungeon.effectList) {
+                if (effect instanceof ShowCardAndObtainEffect) {
+                    return true;
+                }
+            }
+        }
+        if (AbstractDungeon.effectsQueue != null) {
+            for (AbstractGameEffect effect : AbstractDungeon.effectsQueue) {
+                if (effect instanceof ShowCardAndObtainEffect) {
+                    return true;
+                }
+            }
+        }
+        if (AbstractDungeon.topLevelEffects != null) {
+            for (AbstractGameEffect effect : AbstractDungeon.topLevelEffects) {
+                if (effect instanceof FastCardObtainEffect) {
+                    return true;
+                }
+            }
+        }
+        if (AbstractDungeon.topLevelEffectsQueue != null) {
+            for (AbstractGameEffect effect : AbstractDungeon.topLevelEffectsQueue) {
+                if (effect instanceof FastCardObtainEffect) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasUninitializedLivingMonsterIntent() {
+        if (AbstractDungeon.getMonsters() == null) {
+            return false;
+        }
+        for (AbstractMonster monster : AbstractDungeon.getMonsters().monsters) {
+            if (!monster.isDeadOrEscaped()
+                    && monster.currentHealth > 0
+                    && monster.intent == AbstractMonster.Intent.DEBUG) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Resets all state detection variables for the start of a new run.
      */
@@ -107,6 +157,19 @@ public class GameStateListener {
         boolean inCombat = (newPhase == AbstractRoom.RoomPhase.COMBAT);
         // Lots of stuff can happen while the dungeon is fading out, but nothing that requires input from the user.
         if (AbstractDungeon.isFadingOut || AbstractDungeon.isFadingIn) {
+            return false;
+        }
+        // Native card-obtain effects update the master deck only when their
+        // animations complete. Publishing the next choice before that point lets
+        // a fast controller leave the room and cancel the pending reward. Other
+        // cosmetic effects are deliberately ignored because some are long-lived.
+        if (!inCombat && hasPendingCardObtainEffect()) {
+            return false;
+        }
+        // DEBUG is the game's temporary placeholder before a living monster's
+        // player-visible intent has been initialized. A closed in-combat choice
+        // screen is not a valid decision boundary until every live intent is real.
+        if (inCombat && !newScreenUp && hasUninitializedLivingMonsterIntent()) {
             return false;
         }
         // This check happens before the rest since dying can happen in combat and messes with the other cases.

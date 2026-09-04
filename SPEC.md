@@ -1140,14 +1140,34 @@ the same seed and semantically identical game state will normally have different
 decision precondition inside one episode, not a cross-run determinism claim.
 
 Live replay MUST NOT compare `observation_hash` directly across native
-executions. H1-B MUST define a separately versioned replay-checkpoint projection
+executions. H1-B defines a separately versioned replay-checkpoint projection
 that removes or deterministically rebases run-scoped identities while retaining
-the semantic player-visible state required by the parity contract. Until that
-projection exists, live replay may compare explicit normalized semantic fields,
+the semantic player-visible state required by the parity contract. Implementations
+that predate that projection may compare explicit normalized semantic fields,
 but MUST NOT report parity from cross-run `observation_hash` equality. Because
 `legal_actions_hash`, `transition_hash`, and `chain_hash` incorporate run-local
 documents or identities, they are trace-integrity hashes rather than direct
 cross-run checkpoint hashes as well.
+
+`sts-replay-checkpoint.v1` implements that contract as follows:
+
+- episode, native-session, run, room, combat, state, decision, action, choice,
+  card-instance, target, map-node, reward, shop-item, selection-template, and
+  native-index identities are removed or represented by semantic selectors;
+- hand order and hand/card-in-play dynamic values remain strict because they are
+  immediately actionable;
+- draw, discard, exhaust, and limbo collections are semantic multisets;
+- in those inactive combat zones only, cached `damage`, `block`,
+  `cost_for_turn`, `is_playable`, `free_to_play_once`, and `retain` values are
+  excluded because native code may retain a target/power-adjusted cache until
+  the card is drawn and recalculated;
+- card ownership, zone, intrinsic structure, permanent upgrade/misc state,
+  counts, HP, gold, powers, monster state and intent, screen state, map state,
+  and canonical legal-action selectors remain strict.
+
+The omitted inactive-zone caches remain present in the exact observation and
+`observation_hash`. A replay divergence is not waived ad hoc: every narrowing
+rule is versioned and embedded in the checkpoint's `projection_contract`.
 
 Wall-clock timestamps, UI animation counters, log line numbers, process IDs,
 model prose, and provider latency MUST NOT enter native-state parity hashes.
@@ -1228,6 +1248,11 @@ or file redirection mechanisms are accepted only after a real write-path test.
   profile.
 - A future explicit commit workflow requires a separate spec and operator
   authorization.
+- On the accepted Windows/Steam target, a formal launcher MUST refuse to start
+  while the interactive `steam.exe` client is active because it is an
+  independent writer of guarded user `localconfig.vdf`. The launcher MUST NOT
+  terminate Steam automatically. The background `SteamService.exe` alone is not
+  the interactive client and is not a rejection condition.
 
 ## 28. Process ownership and lifecycle
 

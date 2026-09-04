@@ -38,6 +38,9 @@ import org.apache.logging.log4j.Logger;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -45,6 +48,12 @@ import java.util.regex.Pattern;
 public class ChoiceScreenUtils {
 
     private static final Logger logger = LogManager.getLogger(ChoiceScreenUtils.class.getName());
+    private static final Set<RewardItem> harnessConsumedRewards =
+            Collections.newSetFromMap(new WeakHashMap<RewardItem, Boolean>());
+
+    public static boolean isHarnessRewardAvailable(RewardItem reward) {
+        return !reward.isDone && !harnessConsumedRewards.contains(reward);
+    }
 
     public enum ChoiceType {
         EVENT,
@@ -516,13 +525,22 @@ public class ChoiceScreenUtils {
     public static ArrayList<String> getCombatRewardScreenChoices() {
         ArrayList<String> choices = new ArrayList<>();
         for(RewardItem reward : AbstractDungeon.combatRewardScreen.rewards) {
-            choices.add(reward.type.name().toLowerCase());
+            if (isHarnessRewardAvailable(reward)) {
+                choices.add(reward.type.name().toLowerCase());
+            }
         }
         return choices;
     }
 
     public static void makeCombatRewardChoice(int choice) {
-        RewardItem reward = AbstractDungeon.combatRewardScreen.rewards.get(choice);
+        ArrayList<RewardItem> availableRewards = new ArrayList<>();
+        for (RewardItem reward : AbstractDungeon.combatRewardScreen.rewards) {
+            if (isHarnessRewardAvailable(reward)) {
+                availableRewards.add(reward);
+            }
+        }
+        RewardItem reward = availableRewards.get(choice);
+        harnessConsumedRewards.add(reward);
         reward.isDone = true;
     }
 
@@ -536,6 +554,10 @@ public class ChoiceScreenUtils {
 
     public static void makeBossRewardChoice(int choice) {
         AbstractRelic chosenRelic = AbstractDungeon.bossRelicScreen.relics.get(choice);
+        // The screen can close one frame before the chosen relic reaches the
+        // player's relic list. Start the existing ownership animation barrier
+        // before synthesizing the click so no intermediate map state is emitted.
+        GameStateListener.blockStateUpdate();
         AbstractRelicUpdatePatch.doHover = true;
         AbstractRelicUpdatePatch.hoverRelic = chosenRelic;
         InputHelper.justClickedLeft = true;

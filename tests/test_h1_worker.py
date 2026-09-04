@@ -96,3 +96,73 @@ def test_h1_worker_exposes_protocol_and_closes_cleanly(tmp_path: Path) -> None:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
+
+
+def test_h1_worker_reports_bridge_eof_as_failure(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    source_root = str(PROJECT_ROOT / "src")
+    environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
+    environment["STS_HARNESS_RUN_DIR"] = str(tmp_path)
+    environment["STS_HARNESS_EPISODE_ID"] = "ep_crash"
+    environment["STS_HARNESS_NATIVE_SESSION_ID"] = "native_crash"
+    environment["STS_HARNESS_ENVIRONMENT_FINGERPRINT_ID"] = "sha256:environment"
+    process = subprocess.Popen(
+        [sys.executable, "-u", str(WORKER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        cwd=PROJECT_ROOT,
+        env=environment,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "ready"
+    assert process.stdin is not None
+    process.stdin.close()
+    assert process.wait(timeout=5) == 2
+    summary = json.loads((tmp_path / "worker-summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    assert "bridge input closed" in summary["error"]
+
+
+def test_h1_worker_authenticated_abort_needs_no_native_wakeup(tmp_path: Path) -> None:
+    environment = os.environ.copy()
+    source_root = str(PROJECT_ROOT / "src")
+    environment["PYTHONPATH"] = source_root + os.pathsep + environment.get("PYTHONPATH", "")
+    environment["STS_HARNESS_RUN_DIR"] = str(tmp_path)
+    environment["STS_HARNESS_EPISODE_ID"] = "ep_abort_worker"
+    environment["STS_HARNESS_NATIVE_SESSION_ID"] = "native_abort_worker"
+    environment["STS_HARNESS_ENVIRONMENT_FINGERPRINT_ID"] = "sha256:environment"
+    process = subprocess.Popen(
+        [sys.executable, "-u", str(WORKER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        cwd=PROJECT_ROOT,
+        env=environment,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "ready"
+        descriptor = tmp_path / "sidecar.json"
+        deadline = time.monotonic() + 2
+        while not descriptor.is_file() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        client = H1Client.from_descriptor(descriptor, timeout_seconds=2)
+
+        result = client.invoke("quit", {}, mutating=True)
+
+        assert result["aborted"] is True
+        assert process.wait(timeout=5) == 0
+        summary = json.loads((tmp_path / "worker-summary.json").read_text(encoding="utf-8"))
+        assert summary["status"] == "passed"
+        assert summary["abort_requested"] is True
+        assert summary["raw_receive_count"] == 0
+        assert not descriptor.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)

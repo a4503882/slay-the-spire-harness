@@ -13,6 +13,10 @@ from .transition import (
     compute_transition_hash,
     recompute_document_hash,
 )
+from .replay_checkpoint import (
+    build_replay_checkpoint,
+    recompute_replay_checkpoint_hash,
+)
 
 
 class ReplayVerificationFailure(RuntimeError):
@@ -103,6 +107,7 @@ def verify_offline_replay(run_dir: Path) -> dict[str, Any]:
 
         observation = transition.get("observation")
         legal_actions = transition.get("legal_actions")
+        replay_checkpoint = transition.get("replay_checkpoint")
         hashes = transition.get("hashes")
         if not isinstance(observation, dict) or not isinstance(legal_actions, dict) or not isinstance(hashes, dict):
             raise ReplayVerificationFailure(f"transition {expected_index} is structurally incomplete")
@@ -116,6 +121,24 @@ def verify_offline_replay(run_dir: Path) -> dict[str, Any]:
             raise ReplayVerificationFailure(
                 f"legal actions point at another observation at transition {expected_index}"
             )
+        if replay_checkpoint is not None:
+            if not isinstance(replay_checkpoint, dict):
+                raise ReplayVerificationFailure(
+                    f"replay checkpoint is invalid at transition {expected_index}"
+                )
+            rebuilt_checkpoint = build_replay_checkpoint(observation, legal_actions)
+            if replay_checkpoint != rebuilt_checkpoint:
+                raise ReplayVerificationFailure(
+                    f"replay checkpoint mismatch at transition {expected_index}"
+                )
+            checkpoint_hash = recompute_replay_checkpoint_hash(replay_checkpoint)
+            if (
+                replay_checkpoint.get("replay_checkpoint_hash") != checkpoint_hash
+                or hashes.get("replay_checkpoint_hash") != checkpoint_hash
+            ):
+                raise ReplayVerificationFailure(
+                    f"replay checkpoint hash mismatch at transition {expected_index}"
+                )
 
         state_seq = transition.get("state_seq")
         if not isinstance(state_seq, int) or state_seq <= prior_state_seq:

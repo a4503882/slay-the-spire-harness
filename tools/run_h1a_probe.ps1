@@ -186,8 +186,8 @@ $environment = [ordered]@{
         sha256 = $requiredHashes[$baseModJar]
     }
     bridge = [ordered]@{
-        version = '1.2.1-sts-harness.1'
-        protocol_version = 'communicationmod-harness.v1'
+        version = '1.2.1-sts-harness.2'
+        protocol_version = 'communicationmod-harness.v2'
         upstream_commit = '5e417eb189530986b9047a3c9426889fb261d146'
         sha256 = $bridgeHash
     }

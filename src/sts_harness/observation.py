@@ -8,8 +8,12 @@ from typing import Any
 from .canonical import sha256_document
 
 
-BRIDGE_VERSION = "1.2.1-sts-harness.1"
-BRIDGE_PROTOCOL_VERSION = "communicationmod-harness.v1"
+BRIDGE_VERSION = "1.2.1-sts-harness.2"
+BRIDGE_PROTOCOL_VERSION = "communicationmod-harness.v2"
+SUPPORTED_BRIDGE_PROTOCOLS = {
+    ("1.2.1-sts-harness.1", "communicationmod-harness.v1"),
+    (BRIDGE_VERSION, BRIDGE_PROTOCOL_VERSION),
+}
 OBSERVATION_SCHEMA_VERSION = "sts-observation.v1"
 FAIRNESS_PROFILE = "player_visible.v1"
 
@@ -131,12 +135,23 @@ class StateNormalizer:
                 "upgrades": _integer(row.get("upgrades")),
                 "misc": _integer(row.get("misc")),
                 "cost": _integer(row.get("cost")),
+                "base_cost": _integer(row.get("base_cost")),
+                "cost_for_turn": _integer(row.get("cost_for_turn")),
+                "damage": _integer(row.get("damage")),
+                "block": _integer(row.get("block")),
+                "magic_number": _integer(row.get("magic_number")),
                 "type": _string(row.get("type")),
                 "rarity": _string(row.get("rarity")),
                 "is_playable": _boolean(row.get("is_playable")),
                 "requires_target": _boolean(row.get("has_target")),
                 "exhausts": _boolean(row.get("exhausts")),
                 "ethereal": _boolean(row.get("ethereal")),
+                "retain": _boolean(row.get("retain")),
+                "self_retain": _boolean(row.get("self_retain")),
+                "free_to_play_once": _boolean(row.get("free_to_play_once")),
+                "purge_on_use": _boolean(row.get("purge_on_use")),
+                "description": _string(row.get("description")),
+                "price": _integer(row.get("price")),
             }
         )
         if include_instance:
@@ -166,6 +181,8 @@ class StateNormalizer:
                 "relic_id": _string(row.get("id")),
                 "name": _string(row.get("name")),
                 "counter": _integer(row.get("counter")),
+                "description": _string(row.get("description")),
+                "price": _integer(row.get("price")),
             }
         )
 
@@ -179,6 +196,8 @@ class StateNormalizer:
                 "can_use": _boolean(row.get("can_use")),
                 "can_discard": _boolean(row.get("can_discard")),
                 "requires_target": _boolean(row.get("requires_target")),
+                "description": _string(row.get("description")),
+                "price": _integer(row.get("price")),
             }
         )
 
@@ -211,10 +230,19 @@ class StateNormalizer:
             "upgrades",
             "misc",
             "cost",
+            "base_cost",
+            "cost_for_turn",
+            "damage",
+            "block",
+            "magic_number",
             "type",
             "rarity",
             "exhausts",
             "ethereal",
+            "retain",
+            "self_retain",
+            "free_to_play_once",
+            "purge_on_use",
         )
         for card in normalized:
             key = tuple(card.get(field) for field in fields)
@@ -278,8 +306,8 @@ class StateNormalizer:
         if raw.get("in_game") is not True:
             return "main_menu"
         screen_type = str(game.get("screen_type", "NONE")).upper()
+        screen_state = _dict(game.get("screen_state"))
         mapping = {
-            "EVENT": "event",
             "CHEST": "treasure",
             "SHOP_ROOM": "shop",
             "REST": "rest",
@@ -290,9 +318,11 @@ class StateNormalizer:
             "SHOP_SCREEN": "shop",
             "GRID": "grid_select",
             "HAND_SELECT": "hand_select",
-            "GAME_OVER": "game_over",
+            "GAME_OVER": "victory" if screen_state.get("victory") is True else "game_over",
             "COMPLETE": "room_complete",
         }
+        if screen_type == "EVENT":
+            return "neow" if screen_state.get("event_id") == "Neow Event" else "event"
         if screen_type in mapping:
             return mapping[screen_type]
         if screen_type == "NONE" and str(game.get("room_phase", "")).upper() == "COMBAT":
@@ -327,7 +357,7 @@ class StateNormalizer:
             }
             for index, choice in enumerate(choice_list)
         ]
-        if decision_kind == "event":
+        if decision_kind in {"neow", "event"}:
             result["event"] = {
                 "event_id": _string(screen_state.get("event_id")),
                 "event_name": _string(screen_state.get("event_name")),
@@ -361,13 +391,144 @@ class StateNormalizer:
                 "first_node_chosen": _boolean(screen_state.get("first_node_chosen")),
                 "boss_available": _boolean(screen_state.get("boss_available")),
             }
+        elif decision_kind == "card_reward":
+            cards = [self._card(card) for card in _rows(screen_state.get("cards"))]
+            result["card_reward"] = {
+                "cards": [
+                    {**card, "choice_id": f"{decision_id}_choice_{index:02d}"}
+                    for index, card in enumerate(cards)
+                ],
+                "skip_available": _boolean(screen_state.get("skip_available")),
+                "bowl_available": _boolean(screen_state.get("bowl_available")),
+            }
+        elif decision_kind == "combat_reward":
+            rewards: list[dict[str, Any]] = []
+            for index, raw_reward in enumerate(_rows(screen_state.get("rewards"))):
+                reward = _clean_none(
+                    {
+                        "reward_id": f"{decision_id}_reward_{index:02d}",
+                        "choice_id": f"{decision_id}_choice_{index:02d}",
+                        "reward_type": _string(raw_reward.get("reward_type")),
+                        "gold": _integer(raw_reward.get("gold")),
+                    }
+                )
+                if isinstance(raw_reward.get("relic"), dict):
+                    reward["relic"] = self._relic(raw_reward["relic"])
+                if isinstance(raw_reward.get("potion"), dict):
+                    reward["potion"] = self._potion(raw_reward["potion"], index)
+                if isinstance(raw_reward.get("link"), dict):
+                    reward["linked_relic"] = self._relic(raw_reward["link"])
+                rewards.append(reward)
+            result["combat_reward"] = {"rewards": rewards}
+        elif decision_kind == "boss_reward":
+            result["boss_reward"] = {
+                "relics": [
+                    {
+                        **self._relic(relic),
+                        "choice_id": f"{decision_id}_choice_{index:02d}",
+                    }
+                    for index, relic in enumerate(_rows(screen_state.get("relics")))
+                ]
+            }
+        elif decision_kind == "shop":
+            phase = "inventory" if str(game.get("screen_type", "")).upper() == "SHOP_SCREEN" else "entrance"
+            shop: dict[str, Any] = {"phase": phase}
+            if phase == "inventory":
+                shop.update(
+                    {
+                        "cards": [
+                            {
+                                **self._card(card),
+                                "shop_item_id": f"{decision_id}_shop_card_{index:02d}",
+                            }
+                            for index, card in enumerate(_rows(screen_state.get("cards")))
+                        ],
+                        "relics": [
+                            {
+                                **self._relic(relic),
+                                "shop_item_id": f"{decision_id}_shop_relic_{index:02d}",
+                            }
+                            for index, relic in enumerate(_rows(screen_state.get("relics")))
+                        ],
+                        "potions": [
+                            {
+                                **self._potion(potion, index),
+                                "shop_item_id": f"{decision_id}_shop_potion_{index:02d}",
+                            }
+                            for index, potion in enumerate(_rows(screen_state.get("potions")))
+                        ],
+                        "purge_available": _boolean(screen_state.get("purge_available")),
+                        "purge_cost": _integer(screen_state.get("purge_cost")),
+                    }
+                )
+            result["shop"] = shop
+        elif decision_kind == "rest":
+            result["rest"] = {
+                "has_rested": _boolean(screen_state.get("has_rested")),
+                "actions": [
+                    {
+                        "rest_action_id": f"rest_{_slug(name)}",
+                        "native_index": index,
+                        "name": name,
+                    }
+                    for index, name in enumerate(
+                        item for item in _list(screen_state.get("rest_options")) if isinstance(item, str)
+                    )
+                ],
+            }
+        elif decision_kind == "treasure":
+            result["treasure"] = _clean_none(
+                {
+                    "chest_type": _string(screen_state.get("chest_type")),
+                    "chest_open": _boolean(screen_state.get("chest_open")),
+                }
+            )
+        elif decision_kind in {"grid_select", "hand_select"}:
+            if decision_kind == "grid_select":
+                cards = [self._card(card) for card in _rows(screen_state.get("cards"))]
+                selected = [self._card(card) for card in _rows(screen_state.get("selected_cards"))]
+                maximum = _integer(screen_state.get("num_cards"))
+                any_number = _boolean(screen_state.get("any_number")) is True
+                minimum = 0 if any_number else maximum
+                mode = (
+                    "upgrade"
+                    if screen_state.get("for_upgrade") is True
+                    else "transform"
+                    if screen_state.get("for_transform") is True
+                    else "remove"
+                    if screen_state.get("for_purge") is True
+                    else "select"
+                )
+                confirm_up = _boolean(screen_state.get("confirm_up"))
+            else:
+                cards = [self._card(card) for card in _rows(screen_state.get("hand"))]
+                selected = [self._card(card) for card in _rows(screen_state.get("selected"))]
+                maximum = _integer(screen_state.get("max_cards"))
+                minimum = 0 if screen_state.get("can_pick_zero") is True else maximum
+                any_number = screen_state.get("can_pick_zero") is True
+                mode = "hand_select"
+                confirm_up = False
+            result["selection"] = {
+                "selection_template_id": f"{decision_id}_selection",
+                "mode": mode,
+                "minimum": minimum,
+                "maximum": maximum,
+                "any_number": any_number,
+                "confirm_up": confirm_up,
+                "cards": cards,
+                "selected_cards": selected,
+            }
+        elif decision_kind in {"game_over", "victory"}:
+            result["terminal"] = {
+                "victory": _boolean(screen_state.get("victory")),
+                "score": _integer(screen_state.get("score")),
+            }
         return result
 
     def normalize(self, raw: dict[str, Any], state_seq: int) -> dict[str, Any]:
-        if raw.get("bridge_version") != BRIDGE_VERSION:
-            raise NormalizationFailure("unexpected bridge version")
-        if raw.get("protocol_version") != BRIDGE_PROTOCOL_VERSION:
-            raise NormalizationFailure("unexpected bridge protocol version")
+        bridge_contract = (raw.get("bridge_version"), raw.get("protocol_version"))
+        if bridge_contract not in SUPPORTED_BRIDGE_PROTOCOLS:
+            raise NormalizationFailure("unexpected bridge/protocol version pair")
         if raw.get("ready_for_command") is not True:
             raise NormalizationFailure("bridge state is not ready for a command")
         if not isinstance(state_seq, int) or state_seq < 1:
@@ -383,11 +544,16 @@ class StateNormalizer:
             "episode_id": self.episode_id,
             "native_session_id": self.native_session_id,
             "run_id": self.identities.run_id,
+            "act_id": (
+                f"act_{game['act']:02d}"
+                if isinstance(game.get("act"), int) and not isinstance(game.get("act"), bool)
+                else None
+            ),
             "room_id": self.identities.room_id,
             "combat_id": self.identities.combat_id,
             "state_seq": state_seq,
             "decision_id": decision_id,
-            "ready_for_action": decision_kind != "unsupported",
+            "ready_for_action": decision_kind not in {"unsupported", "game_over", "victory"},
             "decision_kind": decision_kind,
             "bridge": {
                 "version": raw["bridge_version"],
@@ -410,6 +576,22 @@ class StateNormalizer:
                     "current_hp": _integer(game.get("current_hp")),
                     "max_hp": _integer(game.get("max_hp")),
                     "gold": _integer(game.get("gold")),
+                    "room_type": _string(game.get("room_type")),
+                    "native_score": (
+                        _integer(_dict(game.get("screen_state")).get("score"))
+                        if decision_kind in {"game_over", "victory"}
+                        else None
+                    ),
+                    "terminal": decision_kind in {"game_over", "victory"},
+                    "outcome": (
+                        "VICTORY_ACT3"
+                        if decision_kind == "victory" and _integer(game.get("act")) == 3
+                        else "VICTORY_ACT4"
+                        if decision_kind == "victory" and _integer(game.get("act")) == 4
+                        else "DEFEAT_COMBAT"
+                        if decision_kind == "game_over"
+                        else None
+                    ),
                     "visible_act_boss": _string(game.get("act_boss")),
                     "keys": {
                         key: bool(value)

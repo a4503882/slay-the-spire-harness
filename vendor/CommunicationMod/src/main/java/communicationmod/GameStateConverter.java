@@ -39,8 +39,8 @@ import java.util.HashMap;
 
 public class GameStateConverter {
 
-    private static final String HARNESS_BRIDGE_VERSION = "1.2.1-sts-harness.1";
-    private static final String HARNESS_PROTOCOL_VERSION = "communicationmod-harness.v1";
+    private static final String HARNESS_BRIDGE_VERSION = "1.2.1-sts-harness.2";
+    private static final String HARNESS_PROTOCOL_VERSION = "communicationmod-harness.v2";
 
     /**
      * Creates a JSON representation of the status of CommunicationMod that will be sent to the external process.
@@ -279,6 +279,9 @@ public class GameStateConverter {
         HashMap<String, Object> state = new HashMap<>();
         ArrayList<Object> rewards = new ArrayList<>();
         for(RewardItem reward : AbstractDungeon.combatRewardScreen.rewards) {
+            if (!ChoiceScreenUtils.isHarnessRewardAvailable(reward)) {
+                continue;
+            }
             HashMap<String, Object> jsonReward = new HashMap<>();
             jsonReward.put("reward_type", reward.type.name());
             switch(reward.type) {
@@ -644,6 +647,16 @@ public class GameStateConverter {
             jsonCard.put("is_playable", card.canUse(AbstractDungeon.player, null));
         }
         jsonCard.put("cost", card.costForTurn);
+        jsonCard.put("base_cost", card.cost);
+        jsonCard.put("cost_for_turn", card.costForTurn);
+        jsonCard.put("damage", card.damage);
+        jsonCard.put("block", card.block);
+        jsonCard.put("magic_number", card.magicNumber);
+        jsonCard.put("retain", card.retain);
+        jsonCard.put("self_retain", card.selfRetain);
+        jsonCard.put("free_to_play_once", card.freeToPlayOnce);
+        jsonCard.put("purge_on_use", card.purgeOnUse);
+        jsonCard.put("description", removeTextFormatting(card.rawDescription));
         jsonCard.put("upgrades", card.timesUpgraded);
         jsonCard.put("id", card.cardID);
         jsonCard.put("type", card.type.name());
@@ -845,6 +858,7 @@ public class GameStateConverter {
         jsonRelic.put("id", relic.relicId);
         jsonRelic.put("name", relic.name);
         jsonRelic.put("counter", relic.counter);
+        jsonRelic.put("description", removeTextFormatting(relic.description));
         return jsonRelic;
     }
 
@@ -871,6 +885,7 @@ public class GameStateConverter {
         jsonPotion.put("can_use", canUse);
         jsonPotion.put("can_discard", canDiscard);
         jsonPotion.put("requires_target", potion.isThrown);
+        jsonPotion.put("description", removeTextFormatting(potion.description));
         return jsonPotion;
     }
 

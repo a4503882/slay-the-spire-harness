@@ -16,6 +16,23 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "compileall failed with exit code $LASTEXITCODE"
     }
+    $parseFailures = @()
+    foreach ($script in @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1' -File)) {
+        $tokens = $null
+        $errors = $null
+        [void][Management.Automation.Language.Parser]::ParseFile(
+            $script.FullName,
+            [ref]$tokens,
+            [ref]$errors
+        )
+        foreach ($parseError in @($errors)) {
+            $parseFailures += "$($script.Name):$($parseError.Extent.StartLineNumber): $($parseError.Message)"
+        }
+    }
+    if ($parseFailures.Count -gt 0) {
+        throw "PowerShell parse checks failed:`n$($parseFailures -join "`n")"
+    }
+    Write-Output 'POWERSHELL_PARSE=PASS'
     if (-not $SkipBridge) {
         & (Join-Path $PSScriptRoot 'build_bridge.ps1')
     }

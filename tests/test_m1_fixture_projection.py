@@ -29,4 +29,4 @@ def test_real_m1_fixture_normalizes_without_player_visible_leaks() -> None:
         assert "second_last_move_id" not in rendered
         assert legal["observation_hash"] == observation["observation_hash"]
         kinds.append(observation["decision_kind"])
-    assert {"main_menu", "event", "map", "combat"}.issubset(kinds)
+    assert {"main_menu", "neow", "map", "combat"}.issubset(kinds)

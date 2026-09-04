@@ -21,6 +21,49 @@ def _required_environment(name: str) -> str:
     return value
 
 
+def _read_bridge_line(runtime: H1Runtime) -> bytes | None:
+    """Poll bridge stdin so an authenticated abort cannot be blocked by readline."""
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        peek_named_pipe = kernel32.PeekNamedPipe
+        peek_named_pipe.argtypes = [
+            wintypes.HANDLE,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        peek_named_pipe.restype = wintypes.BOOL
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(sys.stdin.fileno()))
+        while True:
+            if runtime.abort_requested:
+                return None
+            available = wintypes.DWORD()
+            ok = peek_named_pipe(handle, None, 0, None, ctypes.byref(available), None)
+            if not ok:
+                error = ctypes.get_last_error()
+                if error in {109, 232}:  # ERROR_BROKEN_PIPE / ERROR_NO_DATA
+                    return b""
+                raise OSError(error, "PeekNamedPipe failed for bridge stdin")
+            if available.value > 0:
+                return sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
+            time.sleep(0.1)
+
+    import select
+
+    while True:
+        if runtime.abort_requested:
+            return None
+        readable, _, _ = select.select([sys.stdin.buffer], [], [], 0.1)
+        if readable:
+            return sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
+
+
 def run() -> int:
     run_dir: Path | None = None
     runtime: H1Runtime | None = None
@@ -59,7 +102,9 @@ def run() -> int:
         sys.stderr.flush()
 
         while True:
-            raw_line = sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
+            raw_line = _read_bridge_line(runtime)
+            if raw_line is None:
+                break
             if not raw_line:
                 raise RuntimeError("bridge input closed before env.close completed")
             if len(raw_line) > MAX_LINE_BYTES:
@@ -71,7 +116,9 @@ def run() -> int:
             if not isinstance(document, dict):
                 raise RuntimeError("bridge state must be a JSON object")
             runtime.ingest_bridge_document(document)
-            if runtime.close_requested and runtime.close_wakeup_observed:
+            if runtime.close_requested and (
+                runtime.abort_requested or runtime.close_wakeup_observed
+            ):
                 break
 
         runtime.write_summary(status="passed")
@@ -103,4 +150,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

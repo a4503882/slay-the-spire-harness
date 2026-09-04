@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .canonical import sha256_document
+from .replay_checkpoint import build_replay_checkpoint
 
 
 RAW_EXPORT_SCHEMA_VERSION = "sts-raw-export.v1"
@@ -213,6 +214,10 @@ def build_transition(
         "pre_hashes": previous.hashes if previous is not None else None,
         "observation": deepcopy(current.observation),
         "legal_actions": deepcopy(current.legal_actions),
+        "replay_checkpoint": build_replay_checkpoint(
+            current.observation,
+            current.legal_actions,
+        ),
         "events": deepcopy(events or []),
         "submitted_batch": deepcopy(submitted_batch),
         "action_results": deepcopy(action_results),
@@ -223,11 +228,15 @@ def build_transition(
         "metrics": deepcopy(metrics or {}),
         "hashes": {
             **current.hashes,
+            "replay_checkpoint_hash": None,
             "previous_chain_hash": previous_chain_hash,
             "transition_hash": None,
             "chain_hash": None,
         },
     }
+    transition["hashes"]["replay_checkpoint_hash"] = transition[
+        "replay_checkpoint"
+    ]["replay_checkpoint_hash"]
     transition_hash = compute_transition_hash(transition)
     transition["hashes"]["transition_hash"] = transition_hash
     transition["hashes"]["chain_hash"] = compute_chain_hash(

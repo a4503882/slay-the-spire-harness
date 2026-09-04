@@ -1,0 +1,30 @@
+from __future__ import annotations
+
+from sts_harness import episode_launcher
+from sts_harness.episode_launcher import _active_steam_clients, _real_python_executable, _sha256
+
+
+def test_launcher_hashes_real_python_not_windowsapps_alias() -> None:
+    executable = _real_python_executable()
+    assert executable.is_file()
+    assert len(_sha256(executable)) == 64
+
+
+def test_launcher_steam_preflight_ignores_service_and_finds_client(monkeypatch) -> None:
+    class FakeProcess:
+        def __init__(self, pid: int, name: str) -> None:
+            self.info = {"pid": pid, "name": name, "create_time": 123.0}
+
+    monkeypatch.setattr(
+        episode_launcher.psutil,
+        "process_iter",
+        lambda _: [
+            FakeProcess(10, "SteamService.exe"),
+            FakeProcess(20, "steamwebhelper.exe"),
+            FakeProcess(30, "steam.exe"),
+        ],
+    )
+
+    assert _active_steam_clients() == [
+        {"pid": 30, "name": "steam.exe", "create_time": 123.0}
+    ]

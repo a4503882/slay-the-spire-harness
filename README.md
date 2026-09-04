@@ -7,8 +7,9 @@ M-1 and H1-A are implemented and have passed isolated native probes. H1-A adds
 the loopback framed JSON-RPC sidecar, player-visible state projection, stable
 agent identities, typed legal actions with independent pre/post validation,
 transition hash chaining, offline replay verification, and one complete
-fixed-seed combat without changing normal saves or configuration. H1-B is the
-next milestone.
+fixed-seed combat without changing normal saves or configuration. H1-B adds the
+complete vanilla screen/action surface, one-process-per-episode launcher,
+metrics, explicit failure behavior, and identity-rebased same-seed live replay.
 
 ## Current target
 
@@ -36,14 +37,29 @@ For the Python and script checks without rebuilding the bridge:
 .\tools\run_tests.ps1 -SkipBridge
 ```
 
-Direct pytest invocation is also supported. The subprocess worker test supplies
-its own absolute `src` entry because pytest's `pythonpath` setting applies only
-to the pytest process and is not inherited automatically by a child Python
-process:
+Do not use a bare `python -m pytest -q` as the project acceptance command.
+Pytest's `pythonpath = ["src"]` modifies the pytest process, but that setting is
+not automatically inherited by worker subprocesses such as those exercised by
+`test_m1_worker.py`. The canonical wrapper above sets `PYTHONPATH` for the whole
+process tree and also runs compile/build checks.
+
+Run the formal H1-B source plus fresh-process same-seed replay with:
 
 ```powershell
-python -m pytest -q
+.\tools\run_h1b.ps1 -Seed AMIYA20260904 -TimeoutSeconds 1200 -MaxDecisions 800
 ```
+
+The interactive `steam.exe` client must be closed first. It writes the guarded
+user `localconfig.vdf` independently while active, so the launcher hard-stops at
+preflight instead of launching a run whose exact normal-data guard cannot be
+trusted. It never closes Steam itself and does not reject `SteamService.exe`.
+Evidence is retained under `artifacts\h1b-runs` and
+`artifacts\h1b-corpus`.
+
+The acceptance driver completes every required Act 1 path, consumes a boss
+reward, then uses legal native `end_turn` actions in Act 2 until an authentic
+native defeat. This bounds infrastructure acceptance time; it is explicitly not
+an H1-C strength baseline.
 
 The real native probe is guarded separately:
 
@@ -94,11 +110,14 @@ be semantically identical and still have different `observation_hash` values;
 that difference is expected. Use it for integrity and stale-decision protection,
 never as an H1-B cross-run replay checkpoint.
 
-H1-B live parity must use a separately versioned, identity-rebased semantic
-checkpoint projection (or explicit normalized semantic-field comparison until
-that projection exists). `legal_actions_hash`, `transition_hash`, and
-`chain_hash` also bind run-local material and must not be substituted for that
-cross-run checkpoint.
+H1-B live parity uses `sts-replay-checkpoint.v1`, a separately versioned,
+identity-rebased semantic projection. It removes run-local identity, treats
+non-hand combat piles as semantic multisets, and ignores cached
+`damage`/`block`/turn-cost/playability/free-play/retain values only while a card
+is outside the hand or card-in-play slot; those values remain strict while they
+are actionable. The projection contract is embedded in each checkpoint.
+`legal_actions_hash`, `transition_hash`, and `chain_hash` still bind run-local
+material and must not be substituted for the cross-run checkpoint.
 
 Offline trace verification can be rerun independently:
 
@@ -106,6 +125,14 @@ Offline trace verification can be rerun independently:
 $run = 'artifacts\runs\h1a-20260904-182052-2cf48c53'
 python -m sts_harness.replay_verify --run-dir $run
 python -m sts_harness.h1_verify --run-dir $run
+```
+
+An H1-B corpus is independently verified with:
+
+```powershell
+$corpus = 'artifacts\h1b-corpus\h1b-YYYYMMDD-HHMMSS'
+$env:PYTHONPATH = (Resolve-Path .\src)
+python -m sts_harness.h1b_verify --corpus-dir $corpus
 ```
 
 Set `PYTHONPATH` to the repository's absolute `src` directory first when those

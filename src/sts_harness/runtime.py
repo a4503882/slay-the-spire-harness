@@ -17,9 +17,11 @@ from .legal_actions import (
     LegalActionSnapshot,
     NativeAction,
     build_legal_actions,
+    resolve_planned_action,
     validate_action_submission,
 )
 from .observation import FAIRNESS_PROFILE, StateNormalizer
+from .metrics import EpisodeMetrics
 from .rpc_protocol import RpcFailure
 from .transition import StateSnapshot, build_transition, make_snapshot, raw_export_hash
 
@@ -30,6 +32,10 @@ def utc_now() -> str:
 
 class RuntimeFailure(RuntimeError):
     pass
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 class H1Runtime:
@@ -79,6 +85,7 @@ class H1Runtime:
         self._fatal_error: str | None = None
         self._reset_called = False
         self._closed = False
+        self._abort_requested = False
         self._close_response_sent = False
         self._close_wakeup_after_receive_count: int | None = None
         self._started_at = utc_now()
@@ -88,6 +95,11 @@ class H1Runtime:
         self._actions_attempted = 0
         self._actions_accepted = 0
         self._actions_unverified = 0
+        self._actions_rejected = 0
+        self._actions_skipped = 0
+        self._partial_batch_count = 0
+        self._unsupported_screen_count = 0
+        self._metrics = EpisodeMetrics()
 
     @property
     def close_requested(self) -> bool:
@@ -99,6 +111,11 @@ class H1Runtime:
         with self._condition:
             threshold = self._close_wakeup_after_receive_count
             return threshold is not None and self._raw_receive_count > threshold
+
+    @property
+    def abort_requested(self) -> bool:
+        with self._condition:
+            return self._abort_requested
 
     def _event(self, event: str, **details: Any) -> None:
         append_jsonl(
@@ -166,7 +183,19 @@ class H1Runtime:
                 )
                 self._snapshot = snapshot
                 self._legal_snapshot = legal_snapshot
+                if self._reset_called:
+                    self._metrics.observe_snapshot(snapshot)
                 self._latest_bridge_error = None
+                if observation.get("decision_kind") == "unsupported":
+                    self._unsupported_screen_count += 1
+                    self._event(
+                        "unsupported_screen",
+                        receive_index=receive_index,
+                        state_seq=state_seq,
+                        native_screen_type=_dict(observation.get("screen")).get(
+                            "native_screen_type"
+                        ),
+                    )
                 self._event(
                     "stable_state",
                     receive_index=receive_index,
@@ -223,6 +252,81 @@ class H1Runtime:
                     raise RuntimeFailure("timed out waiting for action post-state")
                 self._condition.wait(remaining)
 
+    def _verify_action_with_settle(
+        self,
+        native: NativeAction,
+        before: StateSnapshot,
+        first_after: StateSnapshot,
+    ) -> tuple[StateSnapshot, bool, dict[str, Any]]:
+        """Allow a bounded later native state to complete an action proof.
+
+        The bridge normally exposes only stable states, but native reward and
+        relic animations can publish one intermediate screen transition before
+        their persistent effect becomes observable. The success criterion is
+        unchanged: a later distinct state must satisfy the same independent
+        action verifier. No failed proof is promoted merely because time passed.
+        """
+        latest = first_after
+        verified, proof = verify_action_effect(native, before, latest)
+        attempts = 1
+        deadline = time.monotonic() + min(5.0, self._state_timeout_seconds)
+        while not verified:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                settled_proof = deepcopy(proof)
+                settled_proof["verification_attempts"] = attempts
+                settled_proof["initial_post_state_seq"] = first_after.state_seq
+                settled_proof["settled_post_state_seq"] = latest.state_seq
+                return latest, False, settled_proof
+            # Give a naturally published final state a brief opportunity first.
+            # If none arrives, request a read-only bridge snapshot. Duplicate
+            # snapshots advance receive_count but do not mint a fake state_seq.
+            time.sleep(min(0.25, remaining))
+            with self._condition:
+                if self._fatal_error is not None:
+                    raise RuntimeFailure(self._fatal_error)
+                if self._snapshot is not None and self._snapshot.state_seq > latest.state_seq:
+                    latest = self._snapshot
+                    attempts += 1
+                    verified, proof = verify_action_effect(native, before, latest)
+                    continue
+                receive_count = self._raw_receive_count
+                error_generation = self._bridge_error_generation
+            self._event(
+                "action_settle_state_probe",
+                action_type=native.action_type,
+                pre_state_seq=before.state_seq,
+                latest_state_seq=latest.state_seq,
+                attempt=attempts + 1,
+            )
+            self._write_command("state")
+            with self._condition:
+                while self._raw_receive_count <= receive_count:
+                    if self._fatal_error is not None:
+                        raise RuntimeFailure(self._fatal_error)
+                    if self._bridge_error_generation > error_generation:
+                        raise RuntimeFailure(
+                            f"native bridge rejected settle probe: {self._latest_bridge_error}"
+                        )
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        settled_proof = deepcopy(proof)
+                        settled_proof["verification_attempts"] = attempts
+                        settled_proof["initial_post_state_seq"] = first_after.state_seq
+                        settled_proof["settled_post_state_seq"] = latest.state_seq
+                        return latest, False, settled_proof
+                    self._condition.wait(remaining)
+                if self._snapshot is not None:
+                    latest = self._snapshot
+            attempts += 1
+            verified, proof = verify_action_effect(native, before, latest)
+        settled_proof = deepcopy(proof)
+        if attempts > 1:
+            settled_proof["verification_attempts"] = attempts
+            settled_proof["initial_post_state_seq"] = first_after.state_seq
+            settled_proof["settled_post_state_seq"] = latest.state_seq
+        return latest, True, settled_proof
+
     @staticmethod
     def _exact_params(params: dict[str, Any], allowed: set[str], required: set[str]) -> None:
         unknown = set(params) - allowed
@@ -264,12 +368,21 @@ class H1Runtime:
             else None
         )
         decision_kind = current.observation.get("decision_kind")
+        transition_events = deepcopy(events or [])
         terminal = decision_kind in {"game_over", "victory"}
-        outcome = None
-        if terminal:
-            run = current.observation.get("run")
-            hp = run.get("current_hp") if isinstance(run, dict) else None
-            outcome = "DEFEAT_COMBAT" if isinstance(hp, int) and hp <= 0 else "VICTORY_ACT3"
+        truncated = decision_kind == "unsupported"
+        run = current.observation.get("run")
+        outcome = run.get("outcome") if isinstance(run, dict) else None
+        if truncated:
+            outcome = "FAILED_UNSUPPORTED_SCREEN"
+            transition_events.append(
+                {
+                    "type": "UNSUPPORTED_SCREEN",
+                    "native_screen_type": _dict(current.observation.get("screen")).get(
+                        "native_screen_type"
+                    ),
+                }
+            )
         transition = build_transition(
             episode_id=self.episode_id,
             transition_index=self._transition_index,
@@ -279,8 +392,9 @@ class H1Runtime:
             previous_chain_hash=prior_chain,
             submitted_batch=submitted_batch,
             action_results=action_results,
-            events=events,
+            events=transition_events,
             terminal=terminal,
+            truncated=truncated,
             outcome=outcome,
             metrics={
                 "raw_receive_count": self._raw_receive_count,
@@ -288,6 +402,10 @@ class H1Runtime:
                 "actions_attempted": self._actions_attempted,
                 "actions_accepted": self._actions_accepted,
                 "actions_unverified": self._actions_unverified,
+                "actions_rejected": self._actions_rejected,
+                "actions_skipped": self._actions_skipped,
+                "partial_batch_count": self._partial_batch_count,
+                "unsupported_screen_count": self._unsupported_screen_count,
             },
         )
         append_jsonl(self.run_dir / "transitions.jsonl", transition)
@@ -313,8 +431,8 @@ class H1Runtime:
             raise RpcFailure(-32602, "seed must match ^[A-Za-z0-9]+$")
         if params.get("fairness_profile") != FAIRNESS_PROFILE:
             raise RpcFailure(-32602, "unsupported fairness profile")
-        if params.get("policy_mode") != "scripted":
-            raise RpcFailure(-32602, "H1-A supports only scripted policy mode")
+        if params.get("policy_mode") not in {"scripted", "scripted_greedy", "scripted_replay"}:
+            raise RpcFailure(-32602, "unsupported scripted policy mode")
         max_decisions = params.get("max_episode_decisions")
         max_seconds = params.get("max_episode_seconds")
         if not isinstance(max_decisions, int) or isinstance(max_decisions, bool) or not 1 <= max_decisions <= 10_000:
@@ -337,6 +455,7 @@ class H1Runtime:
             self._max_episode_decisions = max_decisions
             self._max_episode_seconds = max_seconds
             self._episode_started_monotonic = time.monotonic()
+            self._metrics.configure(seed=seed.upper(), policy_mode=str(params["policy_mode"]))
             try:
                 current = self._command_and_wait(f"start ironclad 0 {seed.upper()}", menu)
             except Exception:
@@ -362,8 +481,11 @@ class H1Runtime:
             "expected_observation_hash",
             "expected_legal_actions_hash",
             "actions",
+            "request_id",
+            "stop_on_failure",
         }
-        self._exact_params(params, allowed, allowed)
+        required = allowed - {"request_id", "stop_on_failure"}
+        self._exact_params(params, allowed, required)
         with self._mutation_lock:
             if not self._reset_called:
                 raise RpcFailure(-32016, "EPISODE_NOT_RESET")
@@ -371,107 +493,218 @@ class H1Runtime:
                 raise RpcFailure(-32012, "EPISODE_CLOSED")
             before = self._wait_for_snapshot()
             self._check_identity(params, before)
+            if before.observation.get("decision_kind") == "unsupported":
+                raise RpcFailure(-32022, "UNSUPPORTED_SCREEN")
+            if before.observation.get("decision_kind") in {"game_over", "victory"}:
+                raise RpcFailure(-32023, "EPISODE_TERMINAL")
             actions = params.get("actions")
-            if not isinstance(actions, list) or len(actions) != 1:
-                raise RpcFailure(-32602, "H1-A requires exactly one action per step")
+            if not isinstance(actions, list) or not 1 <= len(actions) <= 12:
+                raise RpcFailure(-32602, "action batch size must be in [1, 12]")
+            if params.get("stop_on_failure", True) is not True:
+                raise RpcFailure(-32602, "stop_on_failure must be true in v1")
             if self._actions_attempted >= self._max_episode_decisions:
                 raise RpcFailure(-32017, "TRUNCATED_DECISION_LIMIT")
             if self._episode_started_monotonic is not None and (
                 time.monotonic() - self._episode_started_monotonic > self._max_episode_seconds
             ):
                 raise RpcFailure(-32018, "TRUNCATED_TIME_LIMIT")
-            legal_snapshot = self._legal_snapshot
-            if legal_snapshot is None:
-                raise RpcFailure(-32019, "NO_LEGAL_ACTION_SNAPSHOT")
-            try:
-                native: NativeAction = validate_action_submission(actions[0], legal_snapshot)
-            except ActionValidationFailure as exc:
-                append_jsonl(
-                    self.run_dir / "actions.jsonl",
-                    {
-                        "schema_version": "sts-action-audit.v1",
-                        "recorded_at": utc_now(),
-                        "state_seq": before.state_seq,
-                        "decision_id": before.observation.get("decision_id"),
-                        "status": "rejected",
-                        "reason": "ACTION_NOT_LEGAL",
-                        "detail": str(exc),
-                        "submission": actions[0],
-                    },
-                )
-                raise RpcFailure(-32020, "ACTION_NOT_LEGAL", {"detail": str(exc)}) from exc
-
-            self._actions_attempted += 1
             batch = {
                 "schema_version": "sts-action-batch.v1",
                 "batch_id": f"batch_{self._transition_index:06d}",
+                "request_id": params.get("request_id"),
+                "stop_on_failure": True,
                 "actions": deepcopy(actions),
             }
-            try:
-                after = self._command_and_wait(native.command, before)
-            except Exception as exc:
+            current = before
+            results: list[dict[str, Any]] = []
+            events: list[dict[str, Any]] = []
+            stop_reason: str | None = None
+            for action_index, submission in enumerate(actions):
+                if self._actions_attempted >= self._max_episode_decisions:
+                    stop_reason = "TRUNCATED_DECISION_LIMIT"
+                    break
+                legal_snapshot = self._legal_snapshot
+                if legal_snapshot is None:
+                    stop_reason = "NO_LEGAL_ACTION_SNAPSHOT"
+                    break
+                self._actions_attempted += 1
+                try:
+                    native: NativeAction = (
+                        validate_action_submission(submission, legal_snapshot)
+                        if action_index == 0
+                        else resolve_planned_action(submission, legal_snapshot)
+                    )
+                except ActionValidationFailure as exc:
+                    self._actions_rejected += 1
+                    rejection = {
+                        "schema_version": "sts-action-result.v1",
+                        "requested_action_id": submission.get("action_id") if isinstance(submission, dict) else None,
+                        "resolved_action_id": None,
+                        "type": submission.get("type") if isinstance(submission, dict) else None,
+                        "status": "rejected",
+                        "code": "ACTION_NOT_LEGAL",
+                        "native_accepted": False,
+                        "verified": False,
+                        "reason": str(exc),
+                        "pre_state_seq": current.state_seq,
+                    }
+                    append_jsonl(
+                        self.run_dir / "actions.jsonl",
+                        {
+                            "schema_version": "sts-action-audit.v1",
+                            "recorded_at": utc_now(),
+                            "batch_id": batch["batch_id"],
+                            "action_index": action_index,
+                            "state_seq": current.state_seq,
+                            "decision_id": current.observation.get("decision_id"),
+                            "status": "rejected",
+                            "reason": "ACTION_NOT_LEGAL",
+                            "detail": str(exc),
+                            "submission": submission,
+                            "result": rejection,
+                        },
+                    )
+                    if not results:
+                        raise RpcFailure(-32020, "ACTION_NOT_LEGAL", {"detail": str(exc)}) from exc
+                    results.append(rejection)
+                    stop_reason = "ACTION_NOT_LEGAL"
+                    break
+
+                action_before = current
+                try:
+                    after = self._command_and_wait(native.command, action_before)
+                except Exception as exc:
+                    failure = {
+                        "schema_version": "sts-action-result.v1",
+                        "requested_action_id": submission.get("action_id") if isinstance(submission, dict) else None,
+                        "resolved_action_id": native.action_id,
+                        "type": native.action_type,
+                        "selector": deepcopy(native.selector),
+                        "status": "native_failed",
+                        "code": "NATIVE_ACTION_FAILED",
+                        "native_accepted": False,
+                        "verified": False,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                        "pre_state_seq": action_before.state_seq,
+                    }
+                    append_jsonl(
+                        self.run_dir / "actions.jsonl",
+                        {
+                            "schema_version": "sts-action-audit.v1",
+                            "recorded_at": utc_now(),
+                            "batch_id": batch["batch_id"],
+                            "action_index": action_index,
+                            "state_seq": action_before.state_seq,
+                            "decision_id": action_before.observation.get("decision_id"),
+                            "status": "native_failed",
+                            "submission": submission,
+                            "native_command": native.command,
+                            "result": failure,
+                        },
+                    )
+                    if not results:
+                        raise RpcFailure(-32021, "NATIVE_ACTION_FAILED", {"detail": str(exc)}) from exc
+                    results.append(failure)
+                    stop_reason = "NATIVE_ACTION_FAILED"
+                    break
+
+                after, verified, proof = self._verify_action_with_settle(
+                    native,
+                    action_before,
+                    after,
+                )
+                if verified:
+                    self._actions_accepted += 1
+                    status = "accepted"
+                    code = "ACTION_VERIFIED"
+                else:
+                    self._actions_unverified += 1
+                    status = "unverified"
+                    code = "ACTION_UNVERIFIED"
+                action_result = {
+                    "schema_version": "sts-action-result.v1",
+                    "requested_action_id": submission.get("action_id"),
+                    "resolved_action_id": native.action_id,
+                    "action_id": native.action_id,
+                    "type": native.action_type,
+                    "selector": deepcopy(native.selector),
+                    "status": status,
+                    "code": code,
+                    "native_accepted": True,
+                    "native_command_hash": sha256_document(
+                        {
+                            "schema_version": "sts-native-command-hash.v1",
+                            "command": native.command,
+                        }
+                    ),
+                    "verified": verified,
+                    "proof": proof,
+                }
+                results.append(action_result)
                 append_jsonl(
                     self.run_dir / "actions.jsonl",
                     {
                         "schema_version": "sts-action-audit.v1",
                         "recorded_at": utc_now(),
-                        "state_seq": before.state_seq,
-                        "decision_id": before.observation.get("decision_id"),
-                        "status": "native_failed",
-                        "reason": f"{type(exc).__name__}: {exc}",
-                        "submission": actions[0],
+                        "batch_id": batch["batch_id"],
+                        "action_index": action_index,
+                        "state_seq": action_before.state_seq,
+                        "decision_id": action_before.observation.get("decision_id"),
+                        "status": status,
+                        "submission": submission,
+                        "resolved_action_id": native.action_id,
+                        "selector": deepcopy(native.selector),
                         "native_command": native.command,
+                        "result": action_result,
+                        "post_state_seq": after.state_seq,
                     },
                 )
-                raise RpcFailure(-32021, "NATIVE_ACTION_FAILED", {"detail": str(exc)}) from exc
+                current = after
+                if action_before.observation.get("decision_kind") == "combat" and after.observation.get("decision_kind") != "combat":
+                    events.append({"type": "combat_completed", "combat_id": action_before.observation.get("combat_id")})
+                if not verified:
+                    stop_reason = "ACTION_UNVERIFIED"
+                    break
+                if after.observation.get("decision_kind") in {"game_over", "victory"}:
+                    stop_reason = "EPISODE_TERMINAL"
+                    break
+                if after.observation.get("decision_kind") == "unsupported":
+                    stop_reason = "UNSUPPORTED_SCREEN"
+                    break
+                if after.observation.get("room_id") != action_before.observation.get("room_id"):
+                    stop_reason = "ROOM_CHANGED"
+                    break
 
-            verified, proof = verify_action_effect(native, before, after)
-            if verified:
-                self._actions_accepted += 1
-                status = "accepted"
-                code = "ACTION_VERIFIED"
-            else:
-                self._actions_unverified += 1
-                status = "unverified"
-                code = "ACTION_UNVERIFIED"
-            action_result = {
-                "schema_version": "sts-action-result.v1",
-                "action_id": native.action_id,
-                "type": native.action_type,
-                "status": status,
-                "code": code,
-                "native_accepted": True,
-                "native_command_hash": sha256_document(
-                    {
-                        "schema_version": "sts-native-command-hash.v1",
-                        "command": native.command,
-                    }
-                ),
-                "verified": verified,
-                "proof": proof,
-            }
-            append_jsonl(
-                self.run_dir / "actions.jsonl",
-                {
-                    "schema_version": "sts-action-audit.v1",
-                    "recorded_at": utc_now(),
-                    "state_seq": before.state_seq,
-                    "decision_id": before.observation.get("decision_id"),
-                    "status": status,
-                    "submission": actions[0],
-                    "native_command": native.command,
-                    "result": action_result,
-                    "post_state_seq": after.state_seq,
-                },
-            )
-            events: list[dict[str, Any]] = []
-            if before.observation.get("decision_kind") == "combat" and after.observation.get("decision_kind") != "combat":
-                events.append({"type": "combat_completed", "combat_id": before.observation.get("combat_id")})
+            attempted_or_resolved = len(results)
+            if attempted_or_resolved < len(actions):
+                reason = stop_reason or "BATCH_STOPPED"
+                for skipped_index in range(attempted_or_resolved, len(actions)):
+                    submission = actions[skipped_index]
+                    self._actions_skipped += 1
+                    results.append(
+                        {
+                            "schema_version": "sts-action-result.v1",
+                            "requested_action_id": submission.get("action_id") if isinstance(submission, dict) else None,
+                            "resolved_action_id": None,
+                            "type": submission.get("type") if isinstance(submission, dict) else None,
+                            "status": "skipped",
+                            "code": "ACTION_SKIPPED",
+                            "native_accepted": False,
+                            "verified": False,
+                            "reason": reason,
+                        }
+                    )
+            if len(actions) > 1 and any(result.get("status") != "accepted" for result in results):
+                self._partial_batch_count += 1
+                events.append({"type": "ACTION_PARTIAL_SUCCESS", "reason": stop_reason})
+            for result in results:
+                self._metrics.observe_action_result(result)
+            self._metrics.observe_events(events)
             return self._record_transition(
                 previous=before,
-                current=after,
+                current=current,
                 submitted_batch=batch,
-                action_results=[action_result],
+                action_results=results,
                 events=events,
             )
 
@@ -501,12 +734,30 @@ class H1Runtime:
             self._condition.notify_all()
         return {"episode_id": self.episode_id, "close_requested": True, "idempotent": False}
 
+    def abort(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Authenticated lifecycle stop for failures before a run identity exists."""
+        self._exact_params(params, set(), set())
+        with self._condition:
+            idempotent = self._closed
+            self._closed = True
+            self._abort_requested = True
+            self._condition.notify_all()
+        return {
+            "episode_id": self.episode_id,
+            "close_requested": True,
+            "idempotent": idempotent,
+            "aborted": True,
+        }
+
     def mark_close_response_sent(self) -> None:
         with self._condition:
             if not self._closed or self._close_response_sent:
                 return
             self._close_response_sent = True
             self._close_wakeup_after_receive_count = self._raw_receive_count
+            aborted = self._abort_requested
+        if aborted:
+            return
         self._write_command("state")
 
     def dispatch(self, method: str, params: dict[str, Any]) -> Any:
@@ -530,7 +781,7 @@ class H1Runtime:
                 "protocol": "framed-jsonrpc-2.0",
                 "fairness_profiles": [FAIRNESS_PROFILE],
                 "max_frame_bytes": 4 * 1024 * 1024,
-                "max_actions_per_step": 1,
+                "max_actions_per_step": 12,
                 "raw_command_submission": False,
                 "methods": sorted(self.READ_METHODS | self.MUTATING_METHODS),
             }
@@ -575,8 +826,10 @@ class H1Runtime:
             return self.reset(call_params)
         if method in {"env.step", "submit_action"}:
             return self.step(call_params)
-        if method in {"env.close", "quit"}:
+        if method == "env.close":
             return self.close(call_params)
+        if method == "quit":
+            return self.abort(call_params)
         raise RpcFailure(-32601, "Method not found")
 
     def summary(self, *, status: str, error: str | None = None) -> dict[str, Any]:
@@ -608,12 +861,28 @@ class H1Runtime:
                 "actions_attempted": self._actions_attempted,
                 "actions_accepted": self._actions_accepted,
                 "actions_unverified": self._actions_unverified,
+                "actions_rejected": self._actions_rejected,
+                "actions_skipped": self._actions_skipped,
+                "partial_batch_count": self._partial_batch_count,
+                "unsupported_screen_count": self._unsupported_screen_count,
                 "final_chain_hash": final_chain,
                 "close_requested": self._closed,
+                "abort_requested": self._abort_requested,
                 "error": error or self._fatal_error,
+                "metrics": self._metrics.document(
+                    state_count=self._snapshot.state_seq if self._snapshot else 0,
+                    decision_count=self._transition_index,
+                    duplicate_state_count=self._duplicate_state_count,
+                    process_wall_ms=(
+                        int((time.monotonic() - self._episode_started_monotonic) * 1000)
+                        if self._episode_started_monotonic is not None
+                        else None
+                    ),
+                ),
             }
 
     def write_summary(self, *, status: str, error: str | None = None) -> dict[str, Any]:
         result = self.summary(status=status, error=error)
         atomic_write_json(self.run_dir / "worker-summary.json", result)
+        atomic_write_json(self.run_dir / "metrics.json", result["metrics"])
         return result

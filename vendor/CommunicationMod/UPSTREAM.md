@@ -3,10 +3,11 @@
 - upstream: `https://github.com/ForgottenArbiter/CommunicationMod.git`
 - upstream commit: `5e417eb189530986b9047a3c9426889fb261d146`
 - upstream branch at import: `master`
-- Harness bridge version: `1.2.1-sts-harness.1`
+- current Harness bridge version: `1.2.1-sts-harness.2`
+- H1-A accepted bridge version: `1.2.1-sts-harness.1`
 
 The top-level repository tracks this directory as vendored source, not as a Git
-submodule. The H1-A bridge patch modifies exactly these six upstream files:
+submodule. The H1-A bridge patch modified these six upstream files:
 
 - `pom.xml`
 - `src/main/java/communicationmod/CommunicationMod.java`
@@ -14,6 +15,14 @@ submodule. The H1-A bridge patch modifies exactly these six upstream files:
 - `src/main/java/communicationmod/DataWriter.java`
 - `src/main/java/communicationmod/GameStateConverter.java`
 - `src/main/resources/ModTheSpire.json`
+
+H1-B additionally modifies or adds:
+
+- `src/main/java/communicationmod/ChoiceScreenUtils.java`
+- `src/main/java/communicationmod/GameStateConverter.java`
+- `src/main/java/communicationmod/GameStateListener.java`
+- `src/main/java/communicationmod/patches/HarnessDisableSteamIntegrationPatch.java`
+- `pom.xml` and `src/main/resources/ModTheSpire.json` for the H1-B version
 
 The original nested `.git` metadata was moved, without deletion, to the ignored
 local path `.tools/vendor-git/CommunicationMod.git` when the top-level private

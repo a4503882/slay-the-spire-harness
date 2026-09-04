@@ -73,7 +73,7 @@ try {
 } finally {
     $zip.Dispose()
 }
-if ($modInfo.version -ne '1.2.1-sts-harness.1') {
+if ($modInfo.version -ne '1.2.1-sts-harness.2') {
     throw "Unexpected bridge version in ModTheSpire.json: $($modInfo.version)"
 }
 
