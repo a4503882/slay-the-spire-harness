@@ -441,7 +441,13 @@ class H1Runtime:
             raise RpcFailure(-32602, "seed must match ^[A-Za-z0-9]+$")
         if params.get("fairness_profile") != FAIRNESS_PROFILE:
             raise RpcFailure(-32602, "unsupported fairness profile")
-        if params.get("policy_mode") not in {"scripted", "scripted_greedy", "scripted_replay"}:
+        if params.get("policy_mode") not in {
+            "scripted",
+            "h1b_acceptance",
+            "scripted_random_legal",
+            "scripted_greedy",
+            "scripted_replay",
+        }:
             raise RpcFailure(-32602, "unsupported scripted policy mode")
         max_decisions = params.get("max_episode_decisions")
         max_seconds = params.get("max_episode_seconds")

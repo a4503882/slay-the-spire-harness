@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from sts_harness import episode_launcher
 from sts_harness.episode_launcher import (
+    LauncherFailure,
     _active_steam_clients,
     _owned_worker_identity_matches,
     _real_python_executable,
@@ -60,3 +63,29 @@ def test_worker_cleanup_requires_exact_creation_time_and_recorded_owner() -> Non
         recorded_parent_pid=41,
         owner_pid=40,
     )
+
+
+def test_baseline_launcher_rejects_incomplete_identity_before_preflight() -> None:
+    with pytest.raises(LauncherFailure, match="requires exact policy, suite, case"):
+        episode_launcher.launch_episode(
+            project_root=episode_launcher.Path.cwd(),
+            mode="baseline",
+            seed="AMIYA20260904",
+            timeout_seconds=60,
+            max_decisions=10,
+            build_bridge=False,
+            baseline_policy_id="scripted_greedy",
+        )
+
+
+def test_non_baseline_launcher_rejects_baseline_identity_fields() -> None:
+    with pytest.raises(LauncherFailure, match="only in baseline mode"):
+        episode_launcher.launch_episode(
+            project_root=episode_launcher.Path.cwd(),
+            mode="full",
+            seed="AMIYA20260904",
+            timeout_seconds=60,
+            max_decisions=10,
+            build_bridge=False,
+            baseline_policy_id="scripted_greedy",
+        )

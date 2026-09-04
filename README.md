@@ -10,7 +10,9 @@ validation, transition hash chaining, offline replay verification, and one
 complete fixed-seed combat without changing normal saves or configuration.
 H1-B adds the complete vanilla screen/action surface, one-process-per-episode
 launcher, metrics, explicit failure behavior, and identity-rebased same-seed
-live replay. H1-C baselines have not started.
+live replay. H1-C scripted random-legal and deterministic-greedy baselines are
+implemented and have passed their first isolated native acceptance suite; the
+optional tactical solver has not started.
 
 ## Current target
 
@@ -64,6 +66,44 @@ The acceptance driver completes every required Act 1 path, consumes a boss
 reward, then uses legal native `end_turn` actions in Act 2 until an authentic
 native defeat. This bounds infrastructure acceptance time; it is explicitly not
 an H1-C strength baseline.
+
+## H1-C scripted baselines
+
+Run the versioned scripted smoke suite with Steam closed:
+
+```powershell
+.\tools\run_h1c_scripted.ps1
+```
+
+The default suite is
+`benchmarks\h1c-scripted-smoke.v1.json`. It runs
+`scripted_random_legal` and `scripted_greedy` against the same fixed native seed
+in separate isolated processes. Random-legal uses its separately recorded
+policy seed and SHA-256 rejection sampling over canonically ordered semantic
+actions. Greedy uses only integer scores and canonical semantic tie-breaking;
+it does not inherit H1-B's post-coverage terminal strategy.
+
+Each choice is retained in `policy-decisions.jsonl` with its public input hashes,
+candidate-set hash, selection evidence, policy-state hashes, decision hash, and
+decision-chain hash. Per-policy cases and integer/rational aggregates remain
+separate; the suite does not publish a combined score or include H1-B acceptance
+runs. Evidence is retained under `artifacts\h1c-runs` and
+`artifacts\h1c-scripted-corpus`.
+
+Independently verify a completed suite with:
+
+```powershell
+.\tools\verify_h1c_scripted.ps1 `
+  -SuiteDir .\artifacts\h1c-scripted-corpus\<suite-directory>
+```
+
+The verifier rebuilds the H1 observations, legal actions, semantic action
+proofs, offline chains, and every scripted policy decision from public inputs.
+The optional `tactical_solver` adapter is not part of this scripted suite and no
+solver-performance claim is made.
+
+The first accepted H1-C scripted suite is documented in
+[`docs/H1C_SCRIPTED_ACCEPTANCE.md`](docs/H1C_SCRIPTED_ACCEPTANCE.md).
 
 The real native probe is guarded separately:
 

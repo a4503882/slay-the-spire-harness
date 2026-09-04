@@ -2,12 +2,12 @@
 
 | Field | Value |
 | --- | --- |
-| Specification version | `0.2.0-draft` |
+| Specification version | `0.3.0-draft` |
 | Target game | Slay the Spire 1 for Windows/Steam |
 | Initial gameplay scope | Vanilla Ironclad, Ascension 0 |
 | Initial integration | ModTheSpire + BaseMod + a pinned CommunicationMod-compatible bridge |
 | Primary control mode | Structured internal state and structured actions |
-| Status | M-1, H1-A, and H1-B implemented and automatically verified; H1-C not started |
+| Status | M-1, H1-A, H1-B, and H1-C scripted baselines automatically verified; optional tactical solver not started |
 
 ## 1. Normative language
 
@@ -1434,6 +1434,83 @@ presented as pure model performance.
 The baseline interface uses the same observations and legal actions as the LLM
 unless a benchmark explicitly declares a different fairness profile.
 
+### 30.1 H1-C scripted-baseline boundary
+
+The initial H1-C scripted subset consists of exactly two policy modes:
+
+- `scripted_random_legal`;
+- `scripted_greedy`.
+
+Each policy receives only the exact `sts-observation.v1` and
+`sts-legal-actions.v1` documents returned by the public H1 API. It MUST NOT read
+raw-state artifacts, native commands, save files, process memory, hidden seed
+state, another policy's output, or future trace records. Policy-private state is
+allowed only when it is derived from prior player-visible inputs and the
+policy's own prior selections, and it must be represented in the policy audit.
+
+Every scripted policy has a versioned descriptor containing its policy ID,
+policy version, fairness profile, determinism contract, and optional policy
+seed. A change to action ranking, candidate ordering, random selection, or
+policy-private state semantics requires a new policy version. The H1-B coverage
+driver and its post-coverage terminal strategy are not a baseline and MUST NOT
+be included in H1-C results.
+
+### 30.2 Random-legal policy
+
+`scripted_random_legal` chooses exactly one member of the current legal-action
+set without action-type filtering. Terminal states require no selection. Its
+pseudorandom draw is reproducible from a separately recorded policy seed,
+zero-based policy decision index, and the canonical semantic candidate set; it
+does not receive or derive randomness from hidden native state.
+
+Candidates are represented only by action type plus
+`sts-action-selector.v1`, sorted by canonical UTF-8 JSON bytes. Duplicate
+semantic candidates are an error. The initial implementation maps a SHA-256
+draw into the candidate range with rejection sampling so modulo bias does not
+become an undocumented policy rule. The draw digest, retry counter, candidate
+set hash, selected canonical index, and selected semantic selector are retained
+for independent verification.
+
+### 30.3 Deterministic greedy policy
+
+`scripted_greedy` uses a versioned, deterministic set of simple player-visible
+heuristics for combat, pathing, rewards, shops, rest sites, events, selections,
+potions, and boss relics. It may inspect only fields in the two public policy
+documents. It MUST NOT query the bridge or native game directly.
+
+All candidate rankings use integer values. Equal-ranked candidates are resolved
+by the canonical semantic candidate order, never by run-local `action_id`,
+card-instance ID, decision ID, or native collection index. The policy continues
+attempting ordinary play until the native game reaches victory or defeat, or an
+explicit suite limit truncates it. It MUST NOT inherit H1-B's deliberate Act 2
+`end_turn` terminal strategy.
+
+### 30.4 Scripted suite and result artifacts
+
+A formal scripted suite uses `sts-scripted-baseline-suite.v1` and records:
+
+- a stable suite ID and canonical configuration hash;
+- exact character, ascension, fairness profile, native seed matrix, policy IDs,
+  policy versions, and policy seeds;
+- per-episode decision and wall-time limits;
+- one isolated native episode per policy/seed case, executed serially;
+- the environment fingerprint and exact run directory for every episode;
+- one append-only `sts-scripted-policy-decision.v1` audit per policy choice;
+- per-policy episode results and per-policy integer/rational aggregates.
+
+The suite MUST retain terminal, truncated, failed, and not-run cases rather than
+dropping them. Infrastructure status, policy outcome, and native outcome are
+separate fields. It MUST NOT publish a blended score across policy modes.
+Provider/model usage fields remain explicitly unavailable for both scripted
+policies.
+
+The policy-decision audit binds the pre-action observation/legal-action hashes,
+replay-checkpoint hash, canonical candidate-set hash, selected semantic action,
+selection evidence, policy-state digests, decision hash, and chained decision
+hash. An independent verifier reruns the policy over the recorded public inputs
+and recomputes the complete decision chain; the policy's own summary is not
+sufficient evidence.
+
 ## 31. Operator command center
 
 The future H2 command center SHOULD reuse the established Harness control shell
@@ -1720,6 +1797,10 @@ Deliverables:
 - baseline result separation and metrics;
 - no privileged observation unless explicitly labeled.
 
+The scripted subset is independently acceptable once the random-legal and
+deterministic greedy deliverables pass Section 38.3. The tactical solver adapter
+is optional and remains a separately labeled later H1-C extension.
+
 ### H2: Model adapters and command center
 
 Deliverables:
@@ -1770,7 +1851,35 @@ H1 passes only when:
 11. no unrelated process is terminated;
 12. failures and unsupported states remain explicit in the final report.
 
-### 38.3 H2 acceptance
+### 38.3 H1-C scripted-baseline acceptance
+
+The H1-C scripted subset passes only when:
+
+1. all project tests, builds, and script parse checks pass;
+2. the suite configuration, policy descriptors, algorithms, policy seeds,
+   limits, and configuration hash are retained;
+3. `scripted_random_legal` and `scripted_greedy` each run every case in the same
+   fixed native-seed matrix through separate isolated processes;
+4. every policy input is `player_visible.v1` observation and legal-action data,
+   with no raw, hidden, native-command, save, or cross-policy input;
+5. every attempted action belongs to the current legal snapshot and every
+   reported success has semantic post-state verification;
+6. random draws and greedy rankings are independently reproducible from their
+   recorded public inputs and versioned policy contracts;
+7. the initial acceptance case for each policy reaches an authentic native
+   victory or defeat; later benchmark suites may retain explicit truncations but
+   may not call them terminal results;
+8. offline replay, exact normal-data guards, descriptor ACLs, owned-process
+   cleanup, and residual-process checks pass for every episode;
+9. policy outcomes and episode metrics remain separated by policy ID; no H1-B
+   acceptance run, blended score, omitted failure, or stale metric is counted;
+10. model/provider usage fields are unavailable rather than zero;
+11. an independent verifier rebuilds every H1 transition/action proof and every
+    scripted policy-decision chain and reports no failure;
+12. the report states that the optional tactical solver is not implemented and
+    makes no tactical-solver performance claim.
+
+### 38.4 H2 acceptance
 
 H2 passes only when:
 

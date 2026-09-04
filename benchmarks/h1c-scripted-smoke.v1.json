@@ -1,0 +1,25 @@
+{
+  "schema_version": "sts-scripted-baseline-suite.v1",
+  "suite_id": "h1c-scripted-smoke-v1",
+  "character_id": "IRONCLAD",
+  "ascension": 0,
+  "fairness_profile": "player_visible.v1",
+  "native_seeds": [
+    "AMIYA20260904"
+  ],
+  "policies": [
+    {
+      "policy_id": "scripted_random_legal",
+      "policy_version": "1.0.0",
+      "policy_seed": "AMIYAH1CRANDOMV1"
+    },
+    {
+      "policy_id": "scripted_greedy",
+      "policy_version": "1.0.0",
+      "policy_seed": null
+    }
+  ],
+  "max_episode_decisions": 2000,
+  "max_episode_seconds": 1800,
+  "require_native_terminal": true
+}

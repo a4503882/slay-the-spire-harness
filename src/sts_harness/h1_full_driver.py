@@ -503,7 +503,7 @@ def run_full_episode(
                 "ascension": 0,
                 "seed": seed,
                 "fairness_profile": "player_visible.v1",
-                "policy_mode": "scripted_greedy",
+                "policy_mode": "h1b_acceptance",
                 "max_episode_decisions": max_decisions,
                 "max_episode_seconds": int(timeout_seconds),
             },

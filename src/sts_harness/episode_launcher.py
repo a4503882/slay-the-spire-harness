@@ -23,6 +23,8 @@ from .h1_full_driver import run_full_episode
 from .live_replay import run_live_replay
 from .observation import BRIDGE_PROTOCOL_VERSION, BRIDGE_VERSION
 from .replay_verify import verify_offline_replay
+from .scripted_baseline import run_scripted_baseline_episode
+from .scripted_policy import policy_descriptor
 
 
 GAME_ROOT = Path(r"F:\SteamLibrary\steamapps\common\SlayTheSpire")
@@ -324,14 +326,51 @@ def launch_episode(
     max_decisions: int,
     source_run: Path | None = None,
     build_bridge: bool = True,
+    baseline_policy_id: str | None = None,
+    baseline_policy_seed: str | None = None,
+    baseline_suite_id: str | None = None,
+    baseline_case_id: str | None = None,
+    baseline_config_hash: str | None = None,
 ) -> dict[str, Any]:
     if os.name != "nt":
-        raise LauncherFailure("the accepted H1-B launcher target is Windows")
+        raise LauncherFailure("the accepted H1 launcher target is Windows")
     project_root = project_root.resolve()
-    if mode not in {"full", "replay"}:
+    if mode not in {"full", "replay", "baseline"}:
         raise LauncherFailure(f"unsupported episode mode: {mode}")
     if mode == "replay" and source_run is None:
         raise LauncherFailure("replay mode requires source_run")
+    baseline_descriptor: dict[str, Any] | None = None
+    if mode == "baseline":
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                baseline_policy_id,
+                baseline_suite_id,
+                baseline_case_id,
+                baseline_config_hash,
+            )
+        ):
+            raise LauncherFailure("baseline mode requires exact policy, suite, case, and config identity")
+        if not str(baseline_config_hash).startswith("sha256:"):
+            raise LauncherFailure("baseline config hash must be a versioned SHA-256 value")
+        try:
+            baseline_descriptor = policy_descriptor(
+                str(baseline_policy_id),
+                baseline_policy_seed,
+            )
+        except Exception as exc:
+            raise LauncherFailure(f"invalid scripted baseline policy: {exc}") from exc
+    elif any(
+        value is not None
+        for value in (
+            baseline_policy_id,
+            baseline_policy_seed,
+            baseline_suite_id,
+            baseline_case_id,
+            baseline_config_hash,
+        )
+    ):
+        raise LauncherFailure("baseline identity fields are valid only in baseline mode")
     if _related_processes():
         raise LauncherFailure("a related Slay the Spire process is already active")
     steam_clients = _active_steam_clients()
@@ -363,10 +402,16 @@ def launch_episode(
         raise LauncherFailure("built bridge JAR is missing")
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_id = f"h1b-{mode}-{stamp}-{uuid.uuid4().hex[:8]}"
+    if mode == "baseline":
+        policy_slug = str(baseline_policy_id).removeprefix("scripted_").replace("_", "-")
+        run_id = f"h1c-{policy_slug}-{stamp}-{uuid.uuid4().hex[:8]}"
+        run_group = "h1c-runs"
+    else:
+        run_id = f"h1b-{mode}-{stamp}-{uuid.uuid4().hex[:8]}"
+        run_group = "h1b-runs"
     episode_id = f"ep_{uuid.uuid4().hex}"
     native_session_id = f"native_{uuid.uuid4().hex}"
-    run_root = project_root / "artifacts" / "h1b-runs" / run_id
+    run_root = project_root / "artifacts" / run_group / run_id
     run_root.mkdir(parents=True, exist_ok=False)
 
     guard_roots = _guard_roots()
@@ -375,8 +420,19 @@ def launch_episode(
     paths = _prepare_worktree(project_root, run_root, bridge_jar)
     environment = _environment_document(project_root, bridge_jar=bridge_jar, game_java=game_java)
     atomic_write_json(run_root / "environment.json", environment)
+    policy_mode = (
+        "h1b_acceptance"
+        if mode == "full"
+        else "scripted_replay"
+        if mode == "replay"
+        else baseline_policy_id
+    )
     config = {
-        "schema_version": "sts-h1b-run-config.v1",
+        "schema_version": (
+            "sts-scripted-baseline-run-config.v1"
+            if mode == "baseline"
+            else "sts-h1b-run-config.v1"
+        ),
         "run_id": run_id,
         "episode_id": episode_id,
         "native_session_id": native_session_id,
@@ -385,11 +441,21 @@ def launch_episode(
         "character_id": "IRONCLAD",
         "ascension": 0,
         "fairness_profile": "player_visible.v1",
-        "policy_mode": "scripted_greedy" if mode == "full" else "scripted_replay",
+        "policy_mode": policy_mode,
         "max_episode_decisions": max_decisions,
         "max_episode_seconds": timeout_seconds,
         "environment_fingerprint_id": environment["environment_fingerprint_id"],
         "source_run": str(source_run.resolve()) if source_run else None,
+        "baseline": (
+            {
+                "suite_id": baseline_suite_id,
+                "case_id": baseline_case_id,
+                "suite_config_hash": baseline_config_hash,
+                "policy": baseline_descriptor,
+            }
+            if mode == "baseline"
+            else None
+        ),
     }
     atomic_write_json(run_root / "config.json", config)
 
@@ -397,7 +463,13 @@ def launch_episode(
     stderr_path = run_root / "modthespire-stderr.log"
     descriptor_path = run_root / "sidecar.json"
     worker_summary_path = run_root / "worker-summary.json"
-    driver_output = run_root / ("driver-summary.json" if mode == "full" else "live-replay.json")
+    driver_output = run_root / (
+        "driver-summary.json"
+        if mode == "full"
+        else "live-replay.json"
+        if mode == "replay"
+        else "baseline-driver.json"
+    )
     process: subprocess.Popen[Any] | None = None
     worker_pid: int | None = None
     worker_create_time: float | None = None
@@ -475,11 +547,21 @@ def launch_episode(
                     max_decisions=max_decisions,
                     timeout_seconds=remaining,
                 )
-            else:
+            elif mode == "replay":
                 driver = run_live_replay(
                     source_run=source_run.resolve(),  # type: ignore[union-attr]
                     descriptor=descriptor_path,
                     output=driver_output,
+                    timeout_seconds=remaining,
+                )
+            else:
+                driver = run_scripted_baseline_episode(
+                    descriptor=descriptor_path,
+                    output=driver_output,
+                    seed=seed.upper(),
+                    policy_id=str(baseline_policy_id),
+                    policy_seed=baseline_policy_seed,
+                    max_decisions=max_decisions,
                     timeout_seconds=remaining,
                 )
             while not worker_summary_path.is_file() and process.poll() is None:
@@ -545,7 +627,7 @@ def launch_episode(
         driver is not None
         and (
             driver.get("status") == "passed"
-            if mode == "full"
+            if mode in {"full", "baseline"}
             else driver.get("status") == "REPLAY_PARITY"
         )
     )
@@ -564,7 +646,11 @@ def launch_episode(
         )
     ) else "failed"
     report = {
-        "schema_version": "sts-h1b-episode-report.v1",
+        "schema_version": (
+            "sts-scripted-baseline-episode-report.v1"
+            if mode == "baseline"
+            else "sts-h1b-episode-report.v1"
+        ),
         "status": status,
         "mode": mode,
         "run_id": run_id,
@@ -591,10 +677,15 @@ def launch_episode(
         "normal_guard": guard_result,
         "bridge_sha256": _sha256(bridge_jar),
         "game_jar_materialization": "hardlink-to-verified-cache",
+        "baseline": config["baseline"],
     }
     atomic_write_json(run_root / "episode-report.json", report)
     summary = {
-        "schema_version": "sts-h1b-episode-summary.v1",
+        "schema_version": (
+            "sts-scripted-baseline-episode-summary.v1"
+            if mode == "baseline"
+            else "sts-h1b-episode-summary.v1"
+        ),
         "status": status,
         "mode": mode,
         "run_id": run_id,
@@ -602,6 +693,7 @@ def launch_episode(
         "outcome": (driver or {}).get("outcome"),
         "metrics": (worker or {}).get("metrics"),
         "replay": driver if mode == "replay" else offline,
+        "baseline": config["baseline"],
         "normal_guard": guard_result,
         "process_cleanup": {
             "owned_java_stopped": owned_java_stopped,
@@ -616,13 +708,18 @@ def launch_episode(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch one isolated H1-B native episode")
+    parser = argparse.ArgumentParser(description="Launch one isolated H1 native episode")
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[2])
-    parser.add_argument("--mode", choices=("full", "replay"), required=True)
+    parser.add_argument("--mode", choices=("full", "replay", "baseline"), required=True)
     parser.add_argument("--seed", required=True)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument("--max-decisions", type=int, default=5000)
     parser.add_argument("--source-run", type=Path)
+    parser.add_argument("--baseline-policy-id")
+    parser.add_argument("--baseline-policy-seed")
+    parser.add_argument("--baseline-suite-id")
+    parser.add_argument("--baseline-case-id")
+    parser.add_argument("--baseline-config-hash")
     parser.add_argument("--skip-build", action="store_true")
     return parser.parse_args()
 
@@ -638,11 +735,16 @@ def main() -> int:
             max_decisions=args.max_decisions,
             source_run=args.source_run,
             build_bridge=not args.skip_build,
+            baseline_policy_id=args.baseline_policy_id,
+            baseline_policy_seed=args.baseline_policy_seed,
+            baseline_suite_id=args.baseline_suite_id,
+            baseline_case_id=args.baseline_case_id,
+            baseline_config_hash=args.baseline_config_hash,
         )
     except Exception as exc:
-        print(f"H1B_LAUNCH_FAILED={type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"H1_EPISODE_LAUNCH_FAILED={type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
-    print(f"H1B_EPISODE_STATUS={report['status'].upper()}")
+    print(f"H1_EPISODE_STATUS={report['status'].upper()}")
     print(f"MODE={report['mode']}")
     print(f"RUN_ROOT={report['run_root']}")
     print(f"OUTCOME={(report.get('driver') or {}).get('outcome')}")

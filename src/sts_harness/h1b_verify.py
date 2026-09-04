@@ -151,7 +151,13 @@ def _verify_episode(run_dir: Path, expected_mode: str) -> dict[str, Any]:
     run_dir = run_dir.resolve()
     report = _object(run_dir / "episode-report.json")
     worker = _object(run_dir / "worker-summary.json")
-    driver_name = "driver-summary.json" if expected_mode == "full" else "live-replay.json"
+    driver_name = (
+        "driver-summary.json"
+        if expected_mode == "full"
+        else "live-replay.json"
+        if expected_mode == "replay"
+        else "baseline-driver.json"
+    )
     driver = _object(run_dir / driver_name)
     guard = _object(run_dir / "normal-guard-result.json")
     stored_replay = _object(run_dir / "replay.json")
@@ -255,7 +261,7 @@ def _verify_episode(run_dir: Path, expected_mode: str) -> dict[str, Any]:
         "worker_not_aborted": worker.get("abort_requested") is False,
         "driver_passed": (
             driver.get("status") == "passed"
-            if expected_mode == "full"
+            if expected_mode in {"full", "baseline"}
             else driver.get("status") == "REPLAY_PARITY" and driver.get("valid") is True
         ),
         "offline_replay_valid": replay.get("status") == "REPLAY_VALID"
@@ -315,7 +321,7 @@ def _verify_episode(run_dir: Path, expected_mode: str) -> dict[str, Any]:
                 "required_live_decisions": not (LIVE_REQUIRED_DECISIONS - decision_kinds),
             }
         )
-    else:
+    elif expected_mode == "replay":
         common_checks.update(
             {
                 "live_replay_compared_every_checkpoint": driver.get(
@@ -325,6 +331,14 @@ def _verify_episode(run_dir: Path, expected_mode: str) -> dict[str, Any]:
                 "live_replay_replayed_every_action": driver.get("replayed_action_count")
                 == len(transition_results),
                 "live_replay_no_divergence": driver.get("first_divergence") is None,
+            }
+        )
+    else:
+        common_checks.update(
+            {
+                "baseline_driver_terminal": driver.get("episode_status") == "terminal"
+                and driver.get("terminal_reached") is True
+                and driver.get("truncated") is False,
             }
         )
     failures = [name for name, passed in common_checks.items() if not passed]
