@@ -1,0 +1,9 @@
+/.pytest_cache/
+/.tools/
+/.venv/
+/artifacts/*
+!/artifacts/.gitkeep
+**/__pycache__/
+*.py[cod]
+/vendor/CommunicationMod/target/
+

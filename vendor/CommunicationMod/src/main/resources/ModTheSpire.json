@@ -1,0 +1,10 @@
+{
+  "modid": "${project.artifactId}",
+  "name": "Communication Mod (StS Harness)",
+  "author_list": ["Forgotten Arbiter"],
+  "description": "Pinned CommunicationMod bridge for the local Slay the Spire Harness.",
+  "version": "${project.version}",
+  "sts_version": "${SlayTheSpire.version}",
+  "mts_version": "${ModTheSpire.version}",
+  "dependencies": ["basemod"]
+}
